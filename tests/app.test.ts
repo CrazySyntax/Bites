@@ -1,5 +1,6 @@
 import request from "supertest";
 import { buildApp } from "../src/app.js";
+import { MAX_ENDPOINTS, MAX_EVENTS_PER_ENDPOINT } from "../src/config.js";
 import { createHarness, type Harness } from "./harness.js";
 import type { TransportResponse } from "../src/delivery/httpTransport.js";
 
@@ -130,6 +131,42 @@ describe("HTTP API", () => {
         await request(app).patch(`/endpoints/${endpoint.id}`).send({ status: "active" });
         await harness.manager.onIdle(endpoint.id);
         expect(harness.transport.calls).toHaveLength(1);
+    });
+
+    it("returns 500 once the endpoint capacity limit is exceeded", async () => {
+        const app = appFor(createHarness({ responder: ok }));
+
+        // Fill to capacity — every registration up to the limit succeeds.
+        for (let i = 0; i < MAX_ENDPOINTS; i++) {
+            const res = await request(app).post("/endpoints").send({ url: "http://hook.test/x" });
+            expect(res.status).toBe(201);
+        }
+
+        // The one that would exceed the limit is rejected with 500.
+        const overflow = await request(app).post("/endpoints").send({ url: "http://hook.test/x" });
+        expect(overflow.status).toBe(500);
+        expect(overflow.body.error).toMatch(/endpoint limit/i);
+    });
+
+    it("returns 500 once an endpoint's event capacity limit is exceeded", async () => {
+        const harness = createHarness({ responder: ok });
+        const app = appFor(harness);
+        const endpoint = await harness.endpointService.create("http://hook.test/x");
+
+        // Fill this endpoint to its event capacity — each accept returns 202.
+        for (let i = 0; i < MAX_EVENTS_PER_ENDPOINT; i++) {
+            const res = await request(app)
+                .post("/events")
+                .send({ endpointId: endpoint.id, payload: { n: i } });
+            expect(res.status).toBe(202);
+        }
+
+        // The next event for this endpoint is rejected with 500.
+        const overflow = await request(app)
+            .post("/events")
+            .send({ endpointId: endpoint.id, payload: { n: MAX_EVENTS_PER_ENDPOINT } });
+        expect(overflow.status).toBe(500);
+        expect(overflow.body.error).toMatch(/event limit/i);
     });
 
     it("returns 400 for a malformed JSON body", async () => {

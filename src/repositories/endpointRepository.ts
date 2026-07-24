@@ -11,4 +11,6 @@ export interface EndpointRepository {
     create(endpoint: Endpoint): Promise<Endpoint>;
     findById(id: string): Promise<Endpoint | undefined>;
     update(id: string, patch: Partial<Pick<Endpoint, "url" | "status">>): Promise<Endpoint | undefined>;
+    /** Total number of registered endpoints (used to enforce the capacity limit). */
+    count(): Promise<number>;
 }

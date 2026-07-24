@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { MAX_ENDPOINTS } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, capacityExceeded, notFound } from "../errors.js";
 import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type { Endpoint, EndpointStatus } from "../types.js";
 
@@ -22,6 +23,12 @@ export class EndpointService {
 
     async create(url: string): Promise<Endpoint> {
         assertValidUrl(url);
+
+        // Capacity guard against unbounded in-memory growth. See README "Assumptions".
+        if ((await this.endpointRepo.count()) >= MAX_ENDPOINTS) {
+            throw capacityExceeded(`endpoint limit reached (max ${MAX_ENDPOINTS})`);
+        }
+
         const endpoint: Endpoint = {
             id: randomUUID(),
             url,

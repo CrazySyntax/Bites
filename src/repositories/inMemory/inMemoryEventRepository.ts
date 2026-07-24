@@ -72,6 +72,10 @@ export class InMemoryEventRepository implements EventRepository {
         this.idempotency.set(this.idempotencyIndexKey(endpointId, key), eventId);
     }
 
+    async countByEndpoint(endpointId: string): Promise<number> {
+        return (this.byEndpoint.get(endpointId) ?? []).length;
+    }
+
     private idempotencyIndexKey(endpointId: string, key: string): string {
         return `${endpointId}:${key}`;
     }

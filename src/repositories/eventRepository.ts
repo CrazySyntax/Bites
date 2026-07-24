@@ -34,4 +34,7 @@ export interface EventRepository {
     findByIdempotencyKey(endpointId: string, key: string): Promise<WebhookEvent | undefined>;
     /** Record the mapping from an idempotency key to an event id. */
     saveIdempotencyKey(endpointId: string, key: string, eventId: string): Promise<void>;
+
+    /** Number of events belonging to an endpoint (used to enforce the capacity limit). */
+    countByEndpoint(endpointId: string): Promise<number>;
 }

@@ -153,6 +153,22 @@ and covered by a test.
   Different endpoints are unaffected — they each have their own queue and are
   delivered concurrently, so one endpoint's stuck event never delays another's.
 
+- **The in-memory store is capacity-bounded to avoid unbounded memory growth.**
+  At most **100** endpoints may exist, and each endpoint may hold at most **50**
+  events. A `POST /endpoints` that would exceed the endpoint limit, or a
+  `POST /events` that would exceed an endpoint's event limit, is rejected with
+  **HTTP 500** (`{ "error": "endpoint limit reached (max 100)" }` /
+  `"event limit reached for endpoint (max 50)"`). The reasoning: with only
+  in-memory storage there is no eviction or archival, so unbounded creation is a
+  memory leak; a hard cap surfaces the ceiling loudly rather than letting the
+  process grow until it is killed. **500** (rather than 429/507) is used because
+  the spec asked for it, and it correctly signals a server-side capacity
+  condition the client cannot resolve by changing its request. The limit on
+  events is checked *after* the idempotency lookup, so a deduplicated retry of an
+  already-accepted event never trips the cap. Limits live in `src/config.ts`
+  (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); a real datastore would raise or
+  remove them.
+
 ## Tests
 
 `npm test`. The suite (`*.test.ts`) prioritizes the parts most worth trusting:
@@ -168,6 +184,8 @@ and covered by a test.
 - **Pause/resume** and **redeliver** (history preserved, counter reset).
 - **Fail-while-paused** — an attempt failing on a paused endpoint goes straight to
   `dead` (see [Assumptions](#assumptions)).
+- **Capacity limits** — the 101st endpoint and an endpoint's 51st event are each
+  rejected with **500** (see [Assumptions](#assumptions)).
 - **HTTP integration** (supertest): the 202/200 contract, validation, listing,
   pagination.
 

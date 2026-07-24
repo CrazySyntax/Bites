@@ -23,4 +23,8 @@ export class InMemoryEndpointRepository implements EndpointRepository {
         this.endpoints.set(id, updated);
         return updated;
     }
+
+    async count(): Promise<number> {
+        return this.endpoints.size;
+    }
 }

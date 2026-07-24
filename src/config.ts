@@ -28,3 +28,10 @@ export const PORT = Number(process.env.PORT) || 3000;
 /** Pagination defaults for the endpoint-events listing. */
 export const DEFAULT_PAGE_LIMIT = 20;
 export const MAX_PAGE_LIMIT = 100;
+
+/**
+ * Capacity limits guarding the in-memory store against unbounded growth.
+ * Exceeding either is treated as a server-side capacity failure (HTTP 500).
+ */
+export const MAX_ENDPOINTS = 100;
+export const MAX_EVENTS_PER_ENDPOINT = 50;

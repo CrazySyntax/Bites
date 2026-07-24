@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from "../config.js";
+import { DEFAULT_PAGE_LIMIT, MAX_EVENTS_PER_ENDPOINT, MAX_PAGE_LIMIT } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
-import { badRequest, conflict, notFound } from "../errors.js";
+import { badRequest, capacityExceeded, conflict, notFound } from "../errors.js";
 import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type {
     EventRepository,
@@ -60,6 +60,13 @@ export class EventService {
         if (idempotencyKey) {
             const existing = await this.eventRepo.findByIdempotencyKey(endpointId, idempotencyKey);
             if (existing) return { event: existing, deduplicated: true };
+        }
+
+        // Capacity guard against unbounded in-memory growth. Checked after the
+        // idempotency lookup so a deduplicated request never trips the limit.
+        // See README "Assumptions".
+        if ((await this.eventRepo.countByEndpoint(endpointId)) >= MAX_EVENTS_PER_ENDPOINT) {
+            throw capacityExceeded(`event limit reached for endpoint (max ${MAX_EVENTS_PER_ENDPOINT})`);
         }
 
         const event: WebhookEvent = {

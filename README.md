@@ -25,6 +25,29 @@ npm start        # run the compiled build
 
 Override the port with `PORT=4000 npm run dev`.
 
+### Configuration
+
+`src/config.ts` reads its values from the environment (see `.env.example` for
+every supported key). The env file is resolved in this order:
+
+1. An explicit `--env-path <path>` (or `--env-path=<path>`) command-line
+   argument, if given. A path passed here that does not exist is a hard error.
+2. Otherwise, a `.env` file in the working directory, if one exists.
+3. Otherwise, the defaults baked into `config.ts`.
+
+Real environment variables take precedence over the env file, so
+`PORT=4000 npm start` still wins. The loader is hand-rolled (`src/env.ts`),
+keeping the project free of runtime dependencies beyond Express.
+
+```bash
+cp .env.example .env                       # then edit to taste
+npm start                                  # loads ./.env if present
+npm start -- --env-path ./config/prod.env  # or point at a specific file
+```
+
+> The flag is `--env-path`, not `--env-file`: Node consumes `--env-file` itself
+> (its built-in `.env` support) before the app can see it.
+
 ## API
 
 | Method | Path | Description |

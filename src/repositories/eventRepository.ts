@@ -2,7 +2,7 @@ import type { EventStatus, WebhookEvent } from "../types.js";
 
 export interface ListEventsQuery {
     endpointId: string;
-    /** Filter by lifecycle status. `pending` also matches in-flight `delivering`. */
+    /** Filter by lifecycle status (`pending` | `delivered` | `dead`). */
     status?: EventStatus;
     limit: number;
     offset: number;

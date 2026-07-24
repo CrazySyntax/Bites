@@ -108,9 +108,9 @@ export class EndpointQueue {
 
     /** Performs exactly one delivery attempt and records it on the event. */
     private async attemptDelivery(event: WebhookEvent): Promise<void> {
-        event.status = "delivering";
-        await this.deps.eventRepo.save(event);
-
+        // The event stays `pending` while an attempt is in flight — there is no
+        // separate "delivering" state. It only leaves `pending` on a terminal
+        // outcome: `delivered` (2xx) or `dead` (attempts exhausted).
         const attemptNumber = event.attempts.length + 1;
         const controller = new AbortController();
         this.activeAbort = controller;

@@ -7,15 +7,10 @@ import type {
 
 /**
  * Returns true if an event with `actual` status should be included when the
- * caller filters by `filter`.
- *
- * The public API exposes three filter values (pending | delivered | dead) but
- * the internal lifecycle has a transient `delivering` state. We fold
- * `delivering` into `pending` so "pending" means "not yet in a terminal state"
- * from the customer's point of view.
+ * caller filters by `filter`. The event lifecycle and the public filter share
+ * the same three values (pending | delivered | dead), so this is a direct match.
  */
 function matchesStatusFilter(actual: EventStatus, filter: EventStatus): boolean {
-    if (filter === "pending") return actual === "pending" || actual === "delivering";
     return actual === filter;
 }
 

@@ -9,12 +9,12 @@ export type EndpointStatus = "active" | "paused";
 
 /**
  * Event lifecycle:
- *   pending    -> queued, waiting for a delivery attempt (or waiting out a backoff)
- *   delivering -> a delivery attempt is currently in flight
+ *   pending    -> not yet delivered: queued, currently in flight, or waiting out
+ *                 a backoff between retries (attempts remaining)
  *   delivered  -> received a 2xx (terminal)
  *   dead       -> exhausted all attempts (terminal until redelivered)
  */
-export type EventStatus = "pending" | "delivering" | "delivered" | "dead";
+export type EventStatus = "pending" | "delivered" | "dead";
 
 export interface Endpoint {
     id: string;

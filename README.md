@@ -119,14 +119,27 @@ requests.
 
 ### Status filter mapping
 
-`GET /endpoints/:id/events?status=` accepts `pending | delivered | dead`. The
-`pending` filter also matches the transient internal `delivering` state (i.e. it
-means "not yet in a terminal state"). An unknown value returns **400**.
+`GET /endpoints/:id/events?status=` accepts `pending | delivered | dead` — the
+same three values an event's `status` can take (see the assumption below). The
+filter is a direct match; an unknown value returns **400**.
 
 ## Assumptions
 
 Interpretations made where the specification left room; each is enforced in code
 and covered by a test.
+
+- **An event has exactly three statuses: `pending`, `delivered`, `dead`.** There
+  is no separate "in flight" / "delivering" state. An event is `pending` from the
+  moment it is accepted and stays `pending` throughout its whole non-terminal
+  life — while it sits in the queue, while a request is on the wire, and while it
+  waits out the backoff after a failed attempt that still has retries left. It
+  leaves `pending` only on a terminal outcome: `delivered` on a 2xx, or `dead`
+  once all attempts are exhausted (or per the paused-endpoint rule below). The
+  reasoning: from a client's point of view "pending" already means "not yet
+  delivered, still trying", so exposing a transient delivering state adds
+  churn without adding information — the live attempt count and `nextAttemptAt`
+  in `GET /events/:id` already convey progress. `GET /events/:id/…?status=`
+  therefore filters over the same three values.
 
 - **A delivery that fails while its endpoint is paused kills that event
   immediately.** If an attempt fails and the endpoint is currently `paused`, the

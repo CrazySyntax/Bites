@@ -109,9 +109,15 @@ intervening `await`, so two concurrent same-key requests can't both create an ev
 cancels an in-flight backoff wait); events keep enqueuing while paused. Resuming
 restarts the loop and delivers the backlog in order.
 
-**Pluggable storage** — `EndpointRepository` / `EventRepository` are interfaces
-(`src/repositories/`) with in-memory implementations. The methods are async, so a
-real database is a drop-in replacement without changing any caller.
+**Two-level, pluggable storage** — the services (`EndpointService` /
+`EventService`) own an in-memory working set and write every change through to
+the `repositories/` layer, which represents the database: `EndpointRepository` /
+`EventRepository` interfaces with in-memory implementations. The methods are
+async, so a real database is a drop-in replacement without changing any caller.
+The delivery engine reads/persists through the services via the narrow
+`EndpointReader` / `EventStore` seams (`src/delivery/stores.ts`), so the services
+stay the single write-through point. See the two-level-storage assumption for the
+`dead`-event eviction rule.
 
 **Graceful shutdown** — on `SIGINT`/`SIGTERM` the server stops accepting
 connections, pauses every queue, clears backoff timers, and aborts in-flight
@@ -182,6 +188,25 @@ and covered by a test.
   (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); a real datastore would raise or
   remove them.
 
+- **Storage has two levels, and `dead` events are archived, not memory-resident.**
+  `EndpointService` / `EventService` each own an in-memory working set (a `Map`)
+  and write every change *through* to the `repositories/` layer, which stands in
+  for the database (swappable for real DB queries without touching callers). The
+  delivery engine reads and persists through the services (`EndpointReader` /
+  `EventStore` in `src/delivery/stores.ts`), so the services are the single
+  write-through point — a change is always reflected to the database. When an
+  event becomes `dead` (all attempts exhausted, or failed while paused) it is
+  still written to the database with `status: "dead"` but is **evicted from
+  `EventService`'s in-memory map**: a terminal-failed event should not occupy the
+  process working set, yet must remain fetchable (`GET /events/:id`) and
+  redeliverable (`POST /events/:id/redeliver`). Both operations fall back to the
+  database when memory misses, and `redeliver` re-admits the event to memory.
+  Listing, capacity, and idempotency checks run against the database, so they
+  stay correct across eviction (a dead event still counts toward the cap and
+  still dedupes by key). Delivered events remain in memory; only the `dead` state
+  is evicted, per the stated rule. (`inMemoryCount()` on `EventService` exposes
+  the working-set size as an operational metric.)
+
 ## Tests
 
 `npm test`. The suite (`*.test.ts`) prioritizes the parts most worth trusting:
@@ -199,6 +224,11 @@ and covered by a test.
   `dead` (see [Assumptions](#assumptions)).
 - **Capacity limits** — the 101st endpoint and an endpoint's 51st event are each
   rejected with **500** (see [Assumptions](#assumptions)).
+- **Two-level storage** — a `dead` event is evicted from memory yet persisted to
+  the database, still fetchable/listable, and redeliverable from the database
+  (see [Assumptions](#assumptions)); an endpoint update reflects in both levels.
+- **Repository isolation** — mutating a returned entity never leaks into the
+  store; a change lands only via `create`/`save`/`update`.
 - **HTTP integration** (supertest): the 202/200 contract, validation, listing,
   pagination.
 
@@ -219,11 +249,12 @@ src/
     deliveryManager.ts   Map<endpointId, EndpointQueue>
     endpointQueue.ts     per-endpoint FIFO worker loop (ordering, retry, backoff)
     httpTransport.ts     HttpTransport interface + FetchTransport
+    stores.ts            EndpointReader / EventStore seams (engine -> services)
     signer.ts            HMAC-SHA256 signing
     backoff.ts           exponential backoff + jitter (pure)
     sleep.ts             cancellable delay
-  repositories/        storage interfaces + inMemory/ implementations
-  services/            endpointService, eventService
+  repositories/        the "database": storage interfaces + inMemory/ impls
+  services/            endpointService, eventService (own in-memory working set)
   routes/              endpoints, events, health, serialize
   middleware/          errorHandler
 tests/                 all tests + the shared harness (fake transport)

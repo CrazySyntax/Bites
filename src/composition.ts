@@ -28,19 +28,26 @@ export interface Composition extends AppServices {
 export function createComposition(overrides: CompositionOverrides = {}): Composition {
     const endpointRepo = new InMemoryEndpointRepository();
     const eventRepo = new InMemoryEventRepository();
+    const now = overrides.now ?? Date.now;
+
+    // Services own the in-memory working set and are the delivery engine's
+    // storage seam. Build them first, then the manager (which reads/persists
+    // through the services), then close the cycle with setter injection.
+    const endpointService = new EndpointService(endpointRepo, now);
+    const eventService = new EventService(eventRepo, endpointService, now);
 
     const deliveryDeps: DeliveryDeps = {
-        endpointRepo,
-        eventRepo,
+        endpoints: endpointService,
+        events: eventService,
         transport: overrides.transport ?? new FetchTransport(),
         config: overrides.config ?? defaultDeliveryConfig,
-        now: overrides.now ?? Date.now,
+        now,
         rng: overrides.rng ?? Math.random,
     };
 
     const deliveryManager = new DeliveryManager(deliveryDeps);
-    const endpointService = new EndpointService(endpointRepo, deliveryManager, deliveryDeps.now);
-    const eventService = new EventService(eventRepo, endpointRepo, deliveryManager, deliveryDeps.now);
+    endpointService.setDeliveryManager(deliveryManager);
+    eventService.setDeliveryManager(deliveryManager);
 
     return { endpointService, eventService, deliveryManager };
 }

@@ -79,19 +79,25 @@ export function createHarness(options: {
     const endpointRepo = new InMemoryEndpointRepository();
     const eventRepo = new InMemoryEventRepository();
     const transport = new FakeTransport(options.responder);
+    const now = Date.now;
+
+    // Mirror composition.ts: services own memory + are the engine's stores;
+    // build them first, then the manager, then close the cycle with setters.
+    const endpointService = new EndpointService(endpointRepo, now);
+    const eventService = new EventService(eventRepo, endpointService, now);
 
     const deps: DeliveryDeps = {
-        endpointRepo,
-        eventRepo,
+        endpoints: endpointService,
+        events: eventService,
         transport,
         config: options.config ?? testConfig,
-        now: Date.now,
+        now,
         rng: options.rng ?? (() => 0), // deterministic backoff by default
     };
 
     const manager = new DeliveryManager(deps);
-    const endpointService = new EndpointService(endpointRepo, manager, deps.now);
-    const eventService = new EventService(eventRepo, endpointRepo, manager, deps.now);
+    endpointService.setDeliveryManager(manager);
+    eventService.setDeliveryManager(manager);
 
     return { endpointRepo, eventRepo, transport, manager, endpointService, eventService };
 }

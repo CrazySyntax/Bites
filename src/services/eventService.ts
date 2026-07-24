@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { DEFAULT_PAGE_LIMIT, MAX_EVENTS_PER_ENDPOINT, MAX_PAGE_LIMIT } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
+import type { EndpointReader, EventStore } from "../delivery/stores.js";
 import { badRequest, capacityExceeded, conflict, notFound } from "../errors.js";
-import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type {
     EventRepository,
     ListEventsResult,
@@ -30,13 +30,39 @@ export interface ListEndpointEventsInput {
 
 const FILTERABLE_STATUSES: readonly EventStatus[] = ["pending", "delivered", "dead"];
 
-export class EventService {
+/** Deep copy so callers (and the delivery engine) mutate their own object, not
+ * the one held in memory. Mirrors the repository's copy-on-read/write contract. */
+function cloneEvent(event: WebhookEvent): WebhookEvent {
+    return structuredClone(event);
+}
+
+/**
+ * Accepts events, exposes their status/history, and re-queues dead ones.
+ *
+ * Two-level storage: this service owns the in-memory working set (`memory`) and
+ * writes every change through to the repository (the "database"). It implements
+ * {@link EventStore} so the delivery engine reads and persists events through
+ * here rather than touching the repository directly.
+ *
+ * Dead-event rule: when an event becomes `dead` it is still written to the
+ * database (so it can be inspected and redelivered later) but is **evicted from
+ * memory** — a terminal-failed event should not occupy the process working set.
+ * Reads fall back to the database, so `getOrThrow`/`redeliver` still find it.
+ */
+export class EventService implements EventStore {
+    private readonly memory = new Map<string, WebhookEvent>();
+    private deliveryManager!: DeliveryManager;
+
     constructor(
         private readonly eventRepo: EventRepository,
-        private readonly endpointRepo: EndpointRepository,
-        private readonly deliveryManager: DeliveryManager,
+        private readonly endpoints: EndpointReader,
         private readonly now: () => number = Date.now,
     ) {}
+
+    /** Wire the delivery manager after construction (breaks the DI cycle). */
+    setDeliveryManager(deliveryManager: DeliveryManager): void {
+        this.deliveryManager = deliveryManager;
+    }
 
     /**
      * Accepts an event for asynchronous delivery. Returns 202-worthy result for a
@@ -54,7 +80,7 @@ export class EventService {
             throw badRequest("`payload` must be a JSON object");
         }
 
-        const endpoint = await this.endpointRepo.findById(endpointId);
+        const endpoint = await this.endpoints.findById(endpointId);
         if (!endpoint) throw notFound("endpoint not found");
 
         if (idempotencyKey) {
@@ -62,7 +88,8 @@ export class EventService {
             if (existing) return { event: existing, deduplicated: true };
         }
 
-        // Capacity guard against unbounded in-memory growth. Checked after the
+        // Capacity guard against unbounded growth, measured against the durable
+        // store (survives dead-event eviction from memory). Checked after the
         // idempotency lookup so a deduplicated request never trips the limit.
         // See README "Assumptions".
         if ((await this.eventRepo.countByEndpoint(endpointId)) >= MAX_EVENTS_PER_ENDPOINT) {
@@ -81,6 +108,8 @@ export class EventService {
             createdAt: new Date(this.now()).toISOString(),
         };
 
+        // Write through to both levels: memory (working set) + database.
+        this.memory.set(event.id, cloneEvent(event));
         await this.eventRepo.create(event);
         if (idempotencyKey) {
             await this.eventRepo.saveIdempotencyKey(endpointId, idempotencyKey, event.id);
@@ -92,20 +121,56 @@ export class EventService {
         return { event, deduplicated: false };
     }
 
+    /** Memory-first read with database fallback (implements EventStore). A dead
+     * event, evicted from memory, is resolved from the database here. */
+    async findById(id: string): Promise<WebhookEvent | undefined> {
+        const cached = this.memory.get(id);
+        if (cached) return cloneEvent(cached);
+
+        const stored = await this.eventRepo.findById(id);
+        return stored ? cloneEvent(stored) : undefined;
+    }
+
+    /**
+     * Persists a mutated event (implements EventStore). Always reflects the
+     * change to the database; then keeps memory as the live working set — except
+     * a `dead` event is evicted from memory (it lives only in the database until
+     * redelivered).
+     */
+    async save(event: WebhookEvent): Promise<WebhookEvent> {
+        await this.eventRepo.save(event);
+
+        if (event.status === "dead") {
+            this.memory.delete(event.id);
+        } else {
+            this.memory.set(event.id, cloneEvent(event));
+        }
+
+        return cloneEvent(event);
+    }
+
+    /** Number of events currently held in the process working set (memory). An
+     * operational metric; excludes dead events, which are evicted to the DB. */
+    inMemoryCount(): number {
+        return this.memory.size;
+    }
+
     async getOrThrow(id: string): Promise<WebhookEvent> {
-        const event = await this.eventRepo.findById(id);
+        const event = await this.findById(id);
         if (!event) throw notFound("event not found");
         return event;
     }
 
     async listForEndpoint(input: ListEndpointEventsInput): Promise<ListEventsResult> {
-        const endpoint = await this.endpointRepo.findById(input.endpointId);
+        const endpoint = await this.endpoints.findById(input.endpointId);
         if (!endpoint) throw notFound("endpoint not found");
 
         const status = this.parseStatusFilter(input.status);
         const limit = this.parseLimit(input.limit);
         const offset = this.parseOffset(input.offset);
 
+        // List from the database: it holds every event including dead ones, which
+        // are not kept in memory.
         return this.eventRepo.list({ endpointId: input.endpointId, status, limit, offset });
     }
 
@@ -113,6 +178,8 @@ export class EventService {
      * Re-queues a dead event. The attempt counter resets so the event gets a
      * fresh set of attempts, but the historical attempts are preserved. It is
      * re-inserted at the tail of the queue (it already lost its ordering slot).
+     * Reading via `findById` falls back to the database, since a dead event has
+     * been evicted from memory; `save` re-admits it to the working set.
      */
     async redeliver(id: string): Promise<WebhookEvent> {
         const event = await this.getOrThrow(id);
@@ -122,7 +189,7 @@ export class EventService {
 
         event.status = "pending";
         event.attemptCount = 0;
-        await this.eventRepo.save(event);
+        await this.save(event);
 
         this.deliveryManager.enqueue(event.endpointId, event.id);
         return event;

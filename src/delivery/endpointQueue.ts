@@ -77,7 +77,7 @@ export class EndpointQueue {
         try {
             while (!this.paused && this.eventIds.length > 0) {
                 const eventId = this.eventIds[0]; // peek — do not shift until terminal
-                const event = await this.deps.eventRepo.findById(eventId);
+                const event = await this.deps.events.findById(eventId);
                 if (!event) {
                     this.eventIds.shift(); // defensive: event vanished
                     continue;
@@ -116,7 +116,7 @@ export class EndpointQueue {
 
         let attempt: Attempt;
         try {
-            const endpoint = await this.deps.endpointRepo.findById(event.endpointId);
+            const endpoint = await this.deps.endpoints.findById(event.endpointId);
             if (!endpoint) throw new Error("endpoint not found");
 
             const headers: Record<string, string> = {
@@ -161,7 +161,7 @@ export class EndpointQueue {
         }
 
         event.attempts.push(attempt);
-        await this.deps.eventRepo.save(event);
+        await this.deps.events.save(event);
     }
 
     private registerFailure(event: WebhookEvent): void {

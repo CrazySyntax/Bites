@@ -13,7 +13,6 @@ export function serializeEvent(event: WebhookEvent) {
         payload: event.payload,
         attemptCount: event.attemptCount,
         createdAt: event.createdAt,
-        nextAttemptAt: event.nextAttemptAt,
         attempts: event.attempts,
     };
 }

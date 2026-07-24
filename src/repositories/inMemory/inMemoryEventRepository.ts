@@ -14,6 +14,24 @@ function matchesStatusFilter(actual: EventStatus, filter: EventStatus): boolean 
     return actual === filter;
 }
 
+/**
+ * Deep copy of an event, isolating it from the store. `WebhookEvent` has a
+ * nested `attempts[]` array (mutated via `.push()` during delivery) and an
+ * arbitrary JSON `payload`, so a shallow spread is not enough — those would
+ * still be shared references.
+ */
+function cloneEvent(event: WebhookEvent): WebhookEvent {
+    return structuredClone(event);
+}
+
+/**
+ * In-memory event store. The repository is the single source of truth: it
+ * stores and returns deep *copies*, never live references, so the only way to
+ * change persisted state is to go back through `create` / `save`. A caller
+ * mutating a returned event (e.g. the delivery loop pushing an attempt) cannot
+ * silently alter the store — the change lands only when it calls `save`. This is
+ * how a real database behaves, keeping the repository a faithful drop-in seam.
+ */
 export class InMemoryEventRepository implements EventRepository {
     private readonly events = new Map<string, WebhookEvent>();
     /** endpointId -> event ids in insertion (chronological) order. */
@@ -22,20 +40,21 @@ export class InMemoryEventRepository implements EventRepository {
     private readonly idempotency = new Map<string, string>();
 
     async create(event: WebhookEvent): Promise<WebhookEvent> {
-        this.events.set(event.id, event);
+        this.events.set(event.id, cloneEvent(event));
         const ids = this.byEndpoint.get(event.endpointId) ?? [];
         ids.push(event.id);
         this.byEndpoint.set(event.endpointId, ids);
-        return event;
+        return cloneEvent(event);
     }
 
     async findById(id: string): Promise<WebhookEvent | undefined> {
-        return this.events.get(id);
+        const found = this.events.get(id);
+        return found ? cloneEvent(found) : undefined;
     }
 
     async save(event: WebhookEvent): Promise<WebhookEvent> {
-        this.events.set(event.id, event);
-        return event;
+        this.events.set(event.id, cloneEvent(event));
+        return cloneEvent(event);
     }
 
     async list(query: ListEventsQuery): Promise<ListEventsResult> {
@@ -48,7 +67,7 @@ export class InMemoryEventRepository implements EventRepository {
             const event = this.events.get(ids[i]);
             if (!event) continue;
             if (status && !matchesStatusFilter(event.status, status)) continue;
-            matched.push(event);
+            matched.push(cloneEvent(event));
         }
 
         const page = matched.slice(offset, offset + limit);
@@ -60,7 +79,8 @@ export class InMemoryEventRepository implements EventRepository {
         key: string,
     ): Promise<WebhookEvent | undefined> {
         const eventId = this.idempotency.get(this.idempotencyIndexKey(endpointId, key));
-        return eventId ? this.events.get(eventId) : undefined;
+        const found = eventId ? this.events.get(eventId) : undefined;
+        return found ? cloneEvent(found) : undefined;
     }
 
     async saveIdempotencyKey(endpointId: string, key: string, eventId: string): Promise<void> {

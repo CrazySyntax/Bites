@@ -122,7 +122,6 @@ export class EventService {
 
         event.status = "pending";
         event.attemptCount = 0;
-        event.nextAttemptAt = undefined;
         await this.eventRepo.save(event);
 
         this.deliveryManager.enqueue(event.endpointId, event.id);

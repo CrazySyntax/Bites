@@ -93,9 +93,6 @@ export class EndpointQueue {
                 // Failed but retryable: wait out the backoff, keeping the event at the
                 // head so nothing overtakes it, then loop to retry the same event.
                 const delayMs = computeBackoffMs(event.attemptCount, this.deps.config, this.deps.rng);
-                event.nextAttemptAt = new Date(this.deps.now() + delayMs).toISOString();
-                await this.deps.eventRepo.save(event);
-
                 this.backoff = cancellableSleep(delayMs);
                 await this.backoff.promise;
                 this.backoff = undefined;
@@ -146,7 +143,6 @@ export class EndpointQueue {
 
             if (response.statusCode >= 200 && response.statusCode < 300) {
                 event.status = "delivered";
-                event.nextAttemptAt = undefined;
             } else {
                 this.registerFailure(event);
             }
@@ -177,7 +173,6 @@ export class EndpointQueue {
         // "Assumptions". Other queued events stay `pending` and resume normally.
         if (this.paused || event.attemptCount >= this.deps.config.maxAttempts) {
             event.status = "dead";
-            event.nextAttemptAt = undefined;
         } else {
             event.status = "pending";
         }

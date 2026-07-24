@@ -53,6 +53,4 @@ export interface WebhookEvent {
     attemptCount: number;
     idempotencyKey?: string;
     createdAt: string;
-    /** When the next retry is scheduled (set while waiting out a backoff). */
-    nextAttemptAt?: string;
 }

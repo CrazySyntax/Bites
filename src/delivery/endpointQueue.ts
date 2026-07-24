@@ -170,7 +170,12 @@ export class EndpointQueue {
 
     private registerFailure(event: WebhookEvent): void {
         event.attemptCount += 1;
-        if (event.attemptCount >= this.deps.config.maxAttempts) {
+        // Assumption: if a delivery fails while its endpoint is paused, give up on
+        // that event immediately (mark it `dead`) rather than scheduling a retry —
+        // even if it has attempts left. A paused endpoint is not expected to
+        // recover on its own, so retrying against it is wasted work. See README
+        // "Assumptions". Other queued events stay `pending` and resume normally.
+        if (this.paused || event.attemptCount >= this.deps.config.maxAttempts) {
             event.status = "dead";
             event.nextAttemptAt = undefined;
         } else {

@@ -123,17 +123,51 @@ requests.
 `pending` filter also matches the transient internal `delivering` state (i.e. it
 means "not yet in a terminal state"). An unknown value returns **400**.
 
+## Assumptions
+
+Interpretations made where the specification left room; each is enforced in code
+and covered by a test.
+
+- **A delivery that fails while its endpoint is paused kills that event
+  immediately.** If an attempt fails and the endpoint is currently `paused`, the
+  event is marked `dead` right away rather than scheduled for another retry —
+  even if it still has attempts remaining before the 5-attempt limit. The
+  reasoning: a paused endpoint is a deliberate "stop sending here" signal and is
+  not expected to recover on its own, so continuing to retry against it is wasted
+  work; failing fast surfaces the problem instead of hiding it behind backoff.
+  Only the in-flight event is affected — other events for that endpoint remain
+  `pending` and resume delivery normally once the endpoint is reactivated, and a
+  `dead` event can still be re-queued with `POST /events/:id/redeliver`.
+  (Note: this is a deliberate deviation from the plain "retry up to 5 times"
+  rule, applied narrowly to the paused case; active endpoints retry as normal.)
+
+- **Same-endpoint events are delivered strictly one at a time, and a failing
+  event blocks the ones behind it.** When two (or more) events are queued for the
+  same endpoint and the first fails, the queue keeps retrying that first event
+  and does **not** start the second until the first reaches a terminal state —
+  either it succeeds, or it fails all 5 attempts and is marked `dead`. This is
+  the intended reading of "events for the same endpoint are delivered in order":
+  head-of-line blocking, so a later event can never overtake an earlier one that
+  is still being retried. It is implemented by peeking the head of the per-endpoint
+  queue and only removing it once terminal (`src/delivery/endpointQueue.ts`).
+  Different endpoints are unaffected — they each have their own queue and are
+  delivered concurrently, so one endpoint's stuck event never delays another's.
+
 ## Tests
 
 `npm test`. The suite (`*.test.ts`) prioritizes the parts most worth trusting:
 
 - **Ordering** — a head event that fails twice then succeeds is not overtaken.
+- **Head-of-line blocking** — a first event that fails all 5 attempts holds the
+  second until it is `dead` (see [Assumptions](#assumptions)).
 - **Concurrency isolation** — a hung endpoint doesn't delay a healthy one.
 - **Retry → dead** — 5 attempts recorded, then `dead`.
 - **Timeout as failure** — an aborted request counts toward the limit.
 - **Idempotency** — same key ⇒ same event id, delivered once.
 - **Signature** — `X-Signature` equals the HMAC of the exact bytes sent.
 - **Pause/resume** and **redeliver** (history preserved, counter reset).
+- **Fail-while-paused** — an attempt failing on a paused endpoint goes straight to
+  `dead` (see [Assumptions](#assumptions)).
 - **HTTP integration** (supertest): the 202/200 contract, validation, listing,
   pagination.
 

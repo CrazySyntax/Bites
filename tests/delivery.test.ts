@@ -42,6 +42,38 @@ describe("delivery engine", () => {
         expect(deliveredOrder).toEqual([1, 1, 1, 2, 3]);
     });
 
+    it("holds the second event until the first exhausts all 5 attempts and dies", async () => {
+        // Event 1 fails every time; event 2 must not be attempted until event 1
+        // has failed its full 5 attempts and been marked dead.
+        const bodiesInOrder: number[] = [];
+        const harness = createHarness({
+            responder: async (req: TransportRequest) => {
+                const n = JSON.parse(req.body).n;
+                bodiesInOrder.push(n);
+                // While event 1 is still being retried, event 2 must never appear.
+                if (n === 2) {
+                    const firstIsDone = bodiesInOrder.filter((x) => x === 1).length >= 5;
+                    expect(firstIsDone).toBe(true);
+                }
+                return n === 1 ? serverError() : ok();
+            },
+        });
+        const endpoint = await createEndpoint(harness);
+
+        const first = await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 1 } });
+        const second = await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 2 } });
+        await harness.manager.onIdle(endpoint.id);
+
+        // Event 1 exhausts all 5 attempts (all 500) before event 2 is even touched.
+        expect(bodiesInOrder).toEqual([1, 1, 1, 1, 1, 2]);
+
+        const firstStored = await harness.eventRepo.findById(first.event.id);
+        const secondStored = await harness.eventRepo.findById(second.event.id);
+        expect(firstStored?.status).toBe("dead");
+        expect(firstStored?.attempts).toHaveLength(5);
+        expect(secondStored?.status).toBe("delivered");
+    });
+
     it("does not let a slow/down endpoint delay deliveries to other endpoints", async () => {
         // Endpoint A hangs forever (until timeout); endpoint B should deliver immediately.
         const harness = createHarness({
@@ -126,6 +158,29 @@ describe("delivery engine", () => {
         await harness.manager.onIdle(endpoint.id);
 
         expect(harness.transport.calls.map((c) => JSON.parse(c.body).n)).toEqual([1, 2]);
+    });
+
+    it("marks an event dead immediately if it fails while the endpoint is paused", async () => {
+        // The endpoint is paused mid-attempt; the in-flight delivery then fails.
+        // Per the documented assumption, that event goes straight to `dead`
+        // instead of being retried, even though it has attempts left.
+        let harness: Harness;
+        harness = createHarness({
+            responder: async (_req) => {
+                // Pause the endpoint while this first attempt is in flight, then fail it.
+                harness.manager.pause(endpoint.id);
+                return serverError();
+            },
+        });
+        const endpoint = await createEndpoint(harness);
+
+        const event = await enqueueAndDrain(harness, endpoint.id, { hello: "world" });
+
+        const stored = await harness.eventRepo.findById(event.id);
+        expect(stored?.status).toBe("dead");
+        expect(stored?.attempts).toHaveLength(1); // no retries — died on the first failure
+        expect(stored?.attemptCount).toBe(1);
+        expect(harness.transport.calls).toHaveLength(1);
     });
 
     it("redelivers a dead event: resets the counter and preserves history", async () => {

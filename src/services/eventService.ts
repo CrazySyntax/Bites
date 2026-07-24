@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { DEFAULT_PAGE_LIMIT, MAX_EVENTS_PER_ENDPOINT, MAX_PAGE_LIMIT } from "../config.js";
+import {
+    DEFAULT_PAGE_LIMIT,
+    MAX_EVENTS_PER_ENDPOINT,
+    MAX_IN_MEMORY_EVENTS_PER_ENDPOINT,
+    MAX_PAGE_LIMIT,
+} from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
 import type { EndpointReader, EventStore } from "../delivery/stores.js";
 import { badRequest, capacityExceeded, conflict, notFound } from "../errors.js";
@@ -39,10 +44,17 @@ function cloneEvent(event: WebhookEvent): WebhookEvent {
 /**
  * Accepts events, exposes their status/history, and re-queues dead ones.
  *
- * Two-level storage: this service owns the in-memory working set (`memory`) and
+ * Two-level storage: this service owns an in-memory working set (`memory`) and
  * writes every change through to the repository (the "database"). It implements
  * {@link EventStore} so the delivery engine reads and persists events through
  * here rather than touching the repository directly.
+ *
+ * Bounded working set: to cap the heap, `memory` holds at most
+ * {@link MAX_IN_MEMORY_EVENTS_PER_ENDPOINT} non-dead events **per endpoint**
+ * (tracked in `residentByEndpoint`). Once an endpoint is at that limit, a new
+ * event is persisted to the database only and not cached. When an endpoint's
+ * resident count falls to zero (all its cached events became terminal), the
+ * service reloads up to that many recent non-dead events from the database.
  *
  * Dead-event rule: when an event becomes `dead` it is still written to the
  * database (so it can be inspected and redelivered later) but is **evicted from
@@ -51,6 +63,8 @@ function cloneEvent(event: WebhookEvent): WebhookEvent {
  */
 export class EventService implements EventStore {
     private readonly memory = new Map<string, WebhookEvent>();
+    /** endpointId -> set of event ids currently resident in `memory`. */
+    private readonly residentByEndpoint = new Map<string, Set<string>>();
     private deliveryManager!: DeliveryManager;
 
     constructor(
@@ -62,6 +76,98 @@ export class EventService implements EventStore {
     /** Wire the delivery manager after construction (breaks the DI cycle). */
     setDeliveryManager(deliveryManager: DeliveryManager): void {
         this.deliveryManager = deliveryManager;
+    }
+
+    /** The set of event ids resident in memory for an endpoint (created lazily). */
+    private residentIds(endpointId: string): Set<string> {
+        let ids = this.residentByEndpoint.get(endpointId);
+        if (!ids) {
+            ids = new Set<string>();
+            this.residentByEndpoint.set(endpointId, ids);
+        }
+        return ids;
+    }
+
+    /**
+     * Admit an event into the working set, or update it if already resident,
+     * respecting the per-endpoint cap. A non-resident event is dropped (kept in
+     * the database only) once the endpoint is at capacity. Returns whether the
+     * event is resident afterwards.
+     */
+    private cachePut(event: WebhookEvent): boolean {
+        const ids = this.residentIds(event.endpointId);
+        if (!ids.has(event.id) && ids.size >= MAX_IN_MEMORY_EVENTS_PER_ENDPOINT) {
+            return false; // at cap and not already cached -> database only
+        }
+        this.memory.set(event.id, cloneEvent(event));
+        ids.add(event.id);
+        return true;
+    }
+
+    /** Remove an event from the working set (no-op if it was not resident). */
+    private cacheEvict(event: WebhookEvent): void {
+        if (this.memory.delete(event.id)) {
+            this.residentByEndpoint.get(event.endpointId)?.delete(event.id);
+        }
+    }
+
+    /**
+     * If an endpoint has no resident events left, repopulate the working set with
+     * up to the per-endpoint cap of recent non-dead events from the database.
+     */
+    private async reloadIfEmpty(endpointId: string): Promise<void> {
+        if (this.residentIds(endpointId).size > 0) return;
+
+        const recent = await this.eventRepo.findRecentActiveByEndpoint(
+            endpointId,
+            MAX_IN_MEMORY_EVENTS_PER_ENDPOINT,
+        );
+        const ids = this.residentIds(endpointId);
+        for (const event of recent) {
+            this.memory.set(event.id, event); // already a fresh copy from the repo
+            ids.add(event.id);
+        }
+    }
+
+    /**
+     * Rebuilds in-memory state from the database after a snapshot load and
+     * re-queues every restored `pending` event so delivery resumes where the
+     * crashed process left off. Existing working-set state is dropped first.
+     *
+     * The working set is repopulated per endpoint up to the per-endpoint cap
+     * (newest-first, non-dead), matching the steady-state invariant; events
+     * beyond the cap and dead events live in the database only and are resolved
+     * lazily on read. Pending events are re-enqueued in creation order per
+     * endpoint so the engine preserves the original ordering — an event not
+     * resident in memory is still found via the database fallback in `findById`,
+     * so every pending event is deliverable regardless of the cap.
+     *
+     * Call `EndpointService.reload()` first so paused endpoints have their queues
+     * paused before events are enqueued (a paused queue holds the backlog without
+     * delivering).
+     */
+    async reload(): Promise<void> {
+        this.memory.clear();
+        this.residentByEndpoint.clear();
+
+        // Group restored events by endpoint, preserving creation order.
+        const byEndpoint = new Map<string, WebhookEvent[]>();
+        for (const event of await this.eventRepo.dumpAll()) {
+            const list = byEndpoint.get(event.endpointId) ?? [];
+            list.push(event);
+            byEndpoint.set(event.endpointId, list);
+        }
+
+        for (const [endpointId, events] of byEndpoint) {
+            // Repopulate the bounded working set from the database.
+            await this.reloadIfEmpty(endpointId);
+            // Re-queue pending events in creation order to resume delivery.
+            for (const event of events) {
+                if (event.status === "pending") {
+                    this.deliveryManager.enqueue(endpointId, event.id);
+                }
+            }
+        }
     }
 
     /**
@@ -108,9 +214,11 @@ export class EventService implements EventStore {
             createdAt: new Date(this.now()).toISOString(),
         };
 
-        // Write through to both levels: memory (working set) + database.
-        this.memory.set(event.id, cloneEvent(event));
+        // Write through to the database (durable), then admit to the working set
+        // only if the endpoint is under its resident cap — beyond it the event
+        // lives in the database only until the endpoint's cache drains.
         await this.eventRepo.create(event);
+        this.cachePut(event);
         if (idempotencyKey) {
             await this.eventRepo.saveIdempotencyKey(endpointId, idempotencyKey, event.id);
         }
@@ -135,15 +243,19 @@ export class EventService implements EventStore {
      * Persists a mutated event (implements EventStore). Always reflects the
      * change to the database; then keeps memory as the live working set — except
      * a `dead` event is evicted from memory (it lives only in the database until
-     * redelivered).
+     * redelivered). When evicting a dead event empties an endpoint's working set,
+     * the endpoint is repopulated from the database (up to the per-endpoint cap).
      */
     async save(event: WebhookEvent): Promise<WebhookEvent> {
         await this.eventRepo.save(event);
 
         if (event.status === "dead") {
-            this.memory.delete(event.id);
+            this.cacheEvict(event);
+            await this.reloadIfEmpty(event.endpointId);
         } else {
-            this.memory.set(event.id, cloneEvent(event));
+            // A non-dead event already resident is refreshed; one that overflowed
+            // the cap on creation stays database-only (cachePut is a no-op at cap).
+            this.cachePut(event);
         }
 
         return cloneEvent(event);
@@ -153,6 +265,12 @@ export class EventService implements EventStore {
      * operational metric; excludes dead events, which are evicted to the DB. */
     inMemoryCount(): number {
         return this.memory.size;
+    }
+
+    /** Number of events resident in memory for a single endpoint (≤ the
+     * per-endpoint cap). An operational metric used to observe the bounded cache. */
+    inMemoryCountForEndpoint(endpointId: string): number {
+        return this.residentByEndpoint.get(endpointId)?.size ?? 0;
     }
 
     async getOrThrow(id: string): Promise<WebhookEvent> {

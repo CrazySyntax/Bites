@@ -1,10 +1,11 @@
 import type { AppServices } from "./app.js";
-import { defaultDeliveryConfig, type DeliveryConfig } from "./config.js";
+import { DATABASE_FILE, defaultDeliveryConfig, type DeliveryConfig } from "./config.js";
 import { DeliveryManager } from "./delivery/deliveryManager.js";
 import type { DeliveryDeps } from "./delivery/deliveryDeps.js";
 import { FetchTransport, type HttpTransport } from "./delivery/httpTransport.js";
 import { InMemoryEndpointRepository } from "./repositories/inMemory/inMemoryEndpointRepository.js";
 import { InMemoryEventRepository } from "./repositories/inMemory/inMemoryEventRepository.js";
+import { DatabaseService } from "./services/databaseService.js";
 import { EndpointService } from "./services/endpointService.js";
 import { EventService } from "./services/eventService.js";
 
@@ -13,6 +14,8 @@ export interface CompositionOverrides {
     config?: DeliveryConfig;
     now?: () => number;
     rng?: () => number;
+    /** Snapshot file for the dump/load endpoints (defaults to `DATABASE_FILE`). */
+    databaseFile?: string;
 }
 
 export interface Composition extends AppServices {
@@ -49,5 +52,13 @@ export function createComposition(overrides: CompositionOverrides = {}): Composi
     endpointService.setDeliveryManager(deliveryManager);
     eventService.setDeliveryManager(deliveryManager);
 
-    return { endpointService, eventService, deliveryManager };
+    const databaseService = new DatabaseService(
+        overrides.databaseFile ?? DATABASE_FILE,
+        endpointRepo,
+        eventRepo,
+        endpointService,
+        eventService,
+    );
+
+    return { endpointService, eventService, databaseService, deliveryManager };
 }

@@ -91,6 +91,55 @@ export class InMemoryEventRepository implements EventRepository {
         return (this.byEndpoint.get(endpointId) ?? []).length;
     }
 
+    async findRecentActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]> {
+        const ids = this.byEndpoint.get(endpointId) ?? [];
+
+        // Newest first: walk the insertion-ordered index in reverse, skipping
+        // dead events, until we have `limit` of them.
+        const recent: WebhookEvent[] = [];
+        for (let i = ids.length - 1; i >= 0 && recent.length < limit; i--) {
+            const event = this.events.get(ids[i]);
+            if (!event || event.status === "dead") continue;
+            recent.push(cloneEvent(event));
+        }
+        return recent;
+    }
+
+    async dumpAll(): Promise<WebhookEvent[]> {
+        // Creation order across all endpoints: walk each endpoint's insertion
+        // index. (Ordering within an endpoint is what `loadAll` must preserve;
+        // cross-endpoint order is not significant.)
+        const all: WebhookEvent[] = [];
+        for (const ids of this.byEndpoint.values()) {
+            for (const id of ids) {
+                const event = this.events.get(id);
+                if (event) all.push(cloneEvent(event));
+            }
+        }
+        return all;
+    }
+
+    async loadAll(events: WebhookEvent[]): Promise<void> {
+        this.events.clear();
+        this.byEndpoint.clear();
+        this.idempotency.clear();
+
+        // Events arrive in creation order, so appending to each endpoint's index
+        // reconstructs the original chronological ordering.
+        for (const event of events) {
+            this.events.set(event.id, cloneEvent(event));
+            const ids = this.byEndpoint.get(event.endpointId) ?? [];
+            ids.push(event.id);
+            this.byEndpoint.set(event.endpointId, ids);
+            if (event.idempotencyKey) {
+                this.idempotency.set(
+                    this.idempotencyIndexKey(event.endpointId, event.idempotencyKey),
+                    event.id,
+                );
+            }
+        }
+    }
+
     private idempotencyIndexKey(endpointId: string, key: string): string {
         return `${endpointId}:${key}`;
     }

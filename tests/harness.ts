@@ -8,6 +8,7 @@ import type {
 } from "../src/delivery/httpTransport.js";
 import { InMemoryEndpointRepository } from "../src/repositories/inMemory/inMemoryEndpointRepository.js";
 import { InMemoryEventRepository } from "../src/repositories/inMemory/inMemoryEventRepository.js";
+import { DatabaseService } from "../src/services/databaseService.js";
 import { EndpointService } from "../src/services/endpointService.js";
 import { EventService } from "../src/services/eventService.js";
 
@@ -65,6 +66,7 @@ export interface Harness {
     manager: DeliveryManager;
     endpointService: EndpointService;
     eventService: EventService;
+    databaseService: DatabaseService;
 }
 
 /**
@@ -75,6 +77,9 @@ export function createHarness(options: {
     responder: Responder;
     config?: DeliveryConfig;
     rng?: () => number;
+    /** Snapshot file for the DatabaseService; supply a temp path in tests that
+     * exercise dump/load. Defaults to a name no test should touch on disk. */
+    databaseFile?: string;
 }): Harness {
     const endpointRepo = new InMemoryEndpointRepository();
     const eventRepo = new InMemoryEventRepository();
@@ -99,5 +104,21 @@ export function createHarness(options: {
     endpointService.setDeliveryManager(manager);
     eventService.setDeliveryManager(manager);
 
-    return { endpointRepo, eventRepo, transport, manager, endpointService, eventService };
+    const databaseService = new DatabaseService(
+        options.databaseFile ?? "harness-unused.json",
+        endpointRepo,
+        eventRepo,
+        endpointService,
+        eventService,
+    );
+
+    return {
+        endpointRepo,
+        eventRepo,
+        transport,
+        manager,
+        endpointService,
+        eventService,
+        databaseService,
+    };
 }

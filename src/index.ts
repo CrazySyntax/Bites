@@ -5,6 +5,10 @@ import { PORT } from "./config.js";
 const composition = createComposition();
 const app = buildApp(composition);
 
+// Every process invocation starts from a fresh, empty snapshot file. State is
+// persisted by POST /database/dump and restored by POST /database/load.
+await composition.databaseService.initEmptyFile();
+
 const server = app.listen(PORT, () => {
     console.log(`Webhook delivery service running on http://localhost:${PORT}`);
 });

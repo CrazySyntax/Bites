@@ -10,6 +10,7 @@ function appFor(harness: Harness) {
     return buildApp({
         endpointService: harness.endpointService,
         eventService: harness.eventService,
+        databaseService: harness.databaseService,
     });
 }
 

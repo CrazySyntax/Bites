@@ -37,4 +37,24 @@ export interface EventRepository {
 
     /** Number of events belonging to an endpoint (used to enforce the capacity limit). */
     countByEndpoint(endpointId: string): Promise<number>;
+
+    /**
+     * The most recent non-dead events for an endpoint, newest first, capped at
+     * `limit`. Used to repopulate the service's in-memory working set from the
+     * database when it empties for that endpoint.
+     */
+    findRecentActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]>;
+
+    /**
+     * Export every event in creation order (used to snapshot the database to a
+     * file). The per-endpoint order and idempotency indexes are derivable from
+     * the events themselves, so they are not part of the snapshot.
+     */
+    dumpAll(): Promise<WebhookEvent[]>;
+    /**
+     * Replace the entire store with the given events (used to restore a
+     * snapshot), rebuilding the per-endpoint order and idempotency indexes.
+     * Events must be supplied in creation order.
+     */
+    loadAll(events: WebhookEvent[]): Promise<void>;
 }

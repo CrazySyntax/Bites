@@ -13,4 +13,9 @@ export interface EndpointRepository {
     update(id: string, patch: Partial<Pick<Endpoint, "url" | "status">>): Promise<Endpoint | undefined>;
     /** Total number of registered endpoints (used to enforce the capacity limit). */
     count(): Promise<number>;
+
+    /** Export every endpoint (used to snapshot the database to a file). */
+    dumpAll(): Promise<Endpoint[]>;
+    /** Replace the entire store with the given endpoints (used to restore a snapshot). */
+    loadAll(endpoints: Endpoint[]): Promise<void>;
 }

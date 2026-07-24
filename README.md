@@ -35,6 +35,8 @@ Override the port with `PORT=4000 npm run dev`.
 | `GET` | `/events/:id` | Event delivery status + full attempt history. |
 | `GET` | `/endpoints/:id/events?status=&limit=&offset=` | List an endpoint's events, newest first. |
 | `POST` | `/events/:id/redeliver` | Re-queue a `dead` event (attempt counter resets, history preserved). |
+| `POST` | `/database/dump` | Snapshot the whole database to a file. Returns `{ dumped, endpoints, events }`. |
+| `POST` | `/database/load` | Restore the database from the snapshot file and rehydrate the services (restored `pending` events resume delivery). Returns `{ loaded, endpoints, events }`. |
 | `GET` | `/health` | Liveness check. |
 
 ### Quick example
@@ -119,6 +121,19 @@ The delivery engine reads/persists through the services via the narrow
 stay the single write-through point. See the two-level-storage assumption for the
 `dead`-event eviction rule.
 
+**Snapshot persistence** (`src/services/databaseService.ts`, `routes/database.ts`)
+— because the store is in-memory, a crash loses state. `POST /database/dump`
+serializes the whole database (both repositories) to a JSON file, and
+`POST /database/load` reads that file back: it repopulates the repositories, then
+rehydrates the services' working sets (`EndpointService.reload()` /
+`EventService.reload()`) and **re-queues every restored `pending` event** so
+delivery resumes where the crashed process left off. The endpoint service reloads
+first, so a `paused` endpoint has its queue paused before its backlog is
+re-enqueued. The file path is fixed in code (`DATABASE_FILE` in `config.ts`), not
+client-supplied. Each process start writes a fresh, empty snapshot file
+(`index.ts`), so a stale file never loads implicitly — a restore is always an
+explicit `POST /database/load`.
+
 **Graceful shutdown** — on `SIGINT`/`SIGTERM` the server stops accepting
 connections, pauses every queue, clears backoff timers, and aborts in-flight
 requests.
@@ -143,7 +158,7 @@ and covered by a test.
   once all attempts are exhausted (or per the paused-endpoint rule below). The
   reasoning: from a client's point of view "pending" already means "not yet
   delivered, still trying", so exposing a transient delivering state adds
-  churn without adding information — the live attempt count and `nextAttemptAt`
+  churn without adding information — the live attempt count and attempt history
   in `GET /events/:id` already convey progress. `GET /events/:id/…?status=`
   therefore filters over the same three values.
 
@@ -207,6 +222,20 @@ and covered by a test.
   is evicted, per the stated rule. (`inMemoryCount()` on `EventService` exposes
   the working-set size as an operational metric.)
 
+- **`EventService`'s in-memory working set is bounded to the 10 most recent
+  non-dead events per endpoint.** The database holds every non-dead event, but to
+  avoid heap collapse under many endpoints the service caps its resident copy at
+  `MAX_IN_MEMORY_EVENTS_PER_ENDPOINT` (10) events *per endpoint*. Consequences:
+  once an endpoint already has 10 resident events, a newly accepted event is
+  written to the database **only** and not cached; and when an endpoint's
+  resident count falls to 0 (its cached events all became `delivered`/`dead` and
+  were evicted), the service reloads up to 10 of that endpoint's most recent
+  non-dead events from the database on the next `save`. Reads for a
+  database-only event fall back to the database transparently, so correctness is
+  unaffected — the bound only limits how much lives in process memory.
+  (`inMemoryCountForEndpoint(endpointId)` exposes the per-endpoint resident count
+  as an operational metric.)
+
 ## Tests
 
 `npm test`. The suite (`*.test.ts`) prioritizes the parts most worth trusting:
@@ -227,10 +256,18 @@ and covered by a test.
 - **Two-level storage** — a `dead` event is evicted from memory yet persisted to
   the database, still fetchable/listable, and redeliverable from the database
   (see [Assumptions](#assumptions)); an endpoint update reflects in both levels.
+- **Bounded cache** — an endpoint's working set is capped at 10 non-dead events
+  (the 11th is database-only yet still resolvable), each endpoint is bounded
+  independently, and the cache reloads from the database once it drains
+  (see [Assumptions](#assumptions)).
 - **Repository isolation** — mutating a returned entity never leaks into the
   store; a change lands only via `create`/`save`/`update`.
+- **Database dump/load** — a round-trip through the snapshot file restores
+  endpoints and events into a fresh graph; `dead` events (with history) survive
+  and stay redeliverable; restored `pending` events re-queue and deliver; a
+  paused endpoint's backlog stays undelivered until resumed.
 - **HTTP integration** (supertest): the 202/200 contract, validation, listing,
-  pagination.
+  pagination, and the `POST /database/dump` → `POST /database/load` round-trip.
 
 Tests inject a fake HTTP transport and a tiny backoff config, so they're fast and
 never hit the network.
@@ -254,8 +291,9 @@ src/
     backoff.ts           exponential backoff + jitter (pure)
     sleep.ts             cancellable delay
   repositories/        the "database": storage interfaces + inMemory/ impls
-  services/            endpointService, eventService (own in-memory working set)
-  routes/              endpoints, events, health, serialize
+  services/            endpointService, eventService (own in-memory working set),
+                       databaseService (snapshot dump/load)
+  routes/              endpoints, events, database, health, serialize
   middleware/          errorHandler
 tests/                 all tests + the shared harness (fake transport)
   harness.ts           test-only object graph + fake HTTP transport
@@ -267,8 +305,11 @@ tests/                 all tests + the shared harness (fake transport)
 Chosen to fit the time budget; each is a clean extension point rather than a
 rewrite:
 
-- **In-memory storage only** — queued/in-flight events are **lost on restart**.
-  The repository interfaces make a real store a drop-in swap.
+- **In-memory storage only** — state lives in memory, so an unexpected crash
+  loses anything not snapshotted. `POST /database/dump` / `POST /database/load`
+  provide explicit file-based persistence (dump before shutdown, load after
+  restart), but there is no automatic periodic flush; the repository interfaces
+  make a real store a drop-in swap.
 - **Redeliver re-inserts at the queue tail**, not the head — the event already
   lost its ordering slot, so re-blocking the whole queue behind stale work would
   be worse.

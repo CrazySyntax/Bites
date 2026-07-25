@@ -59,7 +59,6 @@ npm start -- --env-path ./config/prod.env  # or point at a specific file
 | `GET` | `/endpoints/:id/events?status=&limit=&offset=` | List an endpoint's events, newest first. |
 | `POST` | `/events/:id/redeliver` | Re-queue a `dead` event (attempt counter resets, history preserved). |
 | `POST` | `/database/dump` | Snapshot the whole database to a file. Returns `{ dumped, endpoints, events }`. |
-| `POST` | `/database/load` | Restore the database from the snapshot file and rehydrate the services (restored `pending` events resume delivery). Returns `{ loaded, endpoints, events }`. |
 
 ### Quick example
 
@@ -162,16 +161,10 @@ are not needed immediately, and we can fetch them from the database when needed.
 
 **Snapshot persistence** (`src/services/databaseService.ts`, `routes/database.ts`)
 — because the store is in-memory, a crash loses state. `POST /database/dump`
-serializes the whole database (both repositories) to a JSON file, and
-`POST /database/load` reads that file back: it repopulates the repositories, then
-rehydrates the services' working sets (`EndpointService.reload()` /
-`EventService.reload()`) and **re-queues every restored `pending` event** so
-delivery resumes where the crashed process left off. The endpoint service reloads
-first, so a `paused` endpoint has its queue paused before its backlog is
-re-enqueued. The file path is fixed in code (`DATABASE_FILE` in `config.ts`), not
+serializes the whole database (both repositories) to a JSON file for backup or
+inspection. The file path is fixed in code (`DATABASE_FILE` in `config.ts`), not
 client-supplied. Each process start writes a fresh, empty snapshot file
-(`index.ts`), so a stale file never loads implicitly — a restore is always an
-explicit `POST /database/load`.
+(`index.ts`).
 
 **Graceful shutdown** — on `SIGINT`/`SIGTERM` the server stops accepting
 connections, pauses every queue, clears backoff timers, and aborts in-flight

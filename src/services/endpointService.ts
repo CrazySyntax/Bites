@@ -63,21 +63,6 @@ export class EndpointService implements EndpointReader {
         return endpoint;
     }
 
-    /**
-     * Rebuilds the in-memory working set from the database after a snapshot load.
-     * Drops the stale working set, repopulates it from the repository, and
-     * re-drives the delivery side-effect so each endpoint's queue matches its
-     * persisted status — a `paused` endpoint gets its queue paused so restored
-     * events don't deliver to it.
-     */
-    async reload(): Promise<void> {
-        this.memory.clear();
-        for (const endpoint of await this.endpointRepo.dumpAll()) {
-            this.memory.set(endpoint.id, { ...endpoint });
-            if (endpoint.status === "paused") this.deliveryManager.pause(endpoint.id);
-        }
-    }
-
     /** Memory-first read with database fallback (implements EndpointReader). */
     async findById(id: string): Promise<Endpoint | undefined> {
         const cached = this.memory.get(id);

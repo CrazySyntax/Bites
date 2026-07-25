@@ -41,11 +41,4 @@ export class InMemoryEndpointRepository implements EndpointRepository {
     async dumpAll(): Promise<Endpoint[]> {
         return Array.from(this.endpoints.values(), (endpoint) => ({ ...endpoint }));
     }
-
-    async loadAll(endpoints: Endpoint[]): Promise<void> {
-        this.endpoints.clear();
-        for (const endpoint of endpoints) {
-            this.endpoints.set(endpoint.id, { ...endpoint });
-        }
-    }
 }

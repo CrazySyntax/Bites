@@ -68,10 +68,10 @@ export const MAX_ENDPOINTS = envNumber("MAX_ENDPOINTS", 100);
 export const MAX_EVENTS_PER_ENDPOINT = envNumber("MAX_EVENTS_PER_ENDPOINT", 50);
 
 /**
- * Snapshot file the database dump/load endpoints read and write, resolved
- * relative to the process working directory. A fresh, empty snapshot is written
- * here on every process start (see `index.ts`); `POST /database/dump` overwrites
- * it with the live state and `POST /database/load` restores from it.
+ * Snapshot file the database dump endpoint writes, resolved relative to the
+ * process working directory. A fresh, empty snapshot is written here on every
+ * process start (see `index.ts`); `POST /database/dump` overwrites it with the
+ * live state.
  */
 export const DATABASE_FILE = envString("DATABASE_FILE", "database.json");
 

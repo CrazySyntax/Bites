@@ -52,10 +52,4 @@ export interface EventRepository {
      * the events themselves, so they are not part of the snapshot.
      */
     dumpAll(): Promise<WebhookEvent[]>;
-    /**
-     * Replace the entire store with the given events (used to restore a
-     * snapshot), rebuilding the per-endpoint order and idempotency indexes.
-     * Events must be supplied in creation order.
-     */
-    loadAll(events: WebhookEvent[]): Promise<void>;
 }

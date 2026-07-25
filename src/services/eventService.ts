@@ -132,47 +132,6 @@ export class EventService implements EventStore {
     }
 
     /**
-     * Rebuilds in-memory state from the database after a snapshot load and
-     * re-queues every restored `pending` event so delivery resumes where the
-     * crashed process left off. Existing working-set state is dropped first.
-     *
-     * The working set is repopulated per endpoint up to the per-endpoint cap
-     * (newest-first, pending only), matching the steady-state invariant; events
-     * beyond the cap and terminal (delivered/dead) events live in the database
-     * only and are resolved lazily on read. Pending events are re-enqueued in
-     * creation order per endpoint so the engine preserves the original ordering —
-     * an event not resident in memory is still found via the database fallback in
-     * `findById`, so every pending event is deliverable regardless of the cap.
-     *
-     * Call `EndpointService.reload()` first so paused endpoints have their queues
-     * paused before events are enqueued (a paused queue holds the backlog without
-     * delivering).
-     */
-    async reload(): Promise<void> {
-        this.memory.clear();
-        this.residentByEndpoint.clear();
-
-        // Group restored events by endpoint, preserving creation order.
-        const byEndpoint = new Map<string, WebhookEvent[]>();
-        for (const event of await this.eventRepo.dumpAll()) {
-            const list = byEndpoint.get(event.endpointId) ?? [];
-            list.push(event);
-            byEndpoint.set(event.endpointId, list);
-        }
-
-        for (const [endpointId, events] of byEndpoint) {
-            // Repopulate the bounded working set from the database.
-            await this.reloadIfEmpty(endpointId);
-            // Re-queue pending events in creation order to resume delivery.
-            for (const event of events) {
-                if (event.status === "pending") {
-                    this.deliveryManager.enqueue(endpointId, event.id);
-                }
-            }
-        }
-    }
-
-    /**
      * Accepts an event for asynchronous delivery. Returns 202-worthy result for a
      * fresh event, or the existing event (deduplicated) when the idempotency key
      * has been seen before.

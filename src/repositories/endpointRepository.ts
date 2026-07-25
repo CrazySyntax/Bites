@@ -16,6 +16,4 @@ export interface EndpointRepository {
 
     /** Export every endpoint (used to snapshot the database to a file). */
     dumpAll(): Promise<Endpoint[]>;
-    /** Replace the entire store with the given endpoints (used to restore a snapshot). */
-    loadAll(endpoints: Endpoint[]): Promise<void>;
 }

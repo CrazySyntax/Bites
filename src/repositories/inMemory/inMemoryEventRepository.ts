@@ -108,8 +108,7 @@ export class InMemoryEventRepository implements EventRepository {
 
     async dumpAll(): Promise<WebhookEvent[]> {
         // Creation order across all endpoints: walk each endpoint's insertion
-        // index. (Ordering within an endpoint is what `loadAll` must preserve;
-        // cross-endpoint order is not significant.)
+        // index. (Cross-endpoint order is not significant.)
         const all: WebhookEvent[] = [];
         for (const ids of this.byEndpoint.values()) {
             for (const id of ids) {
@@ -118,27 +117,6 @@ export class InMemoryEventRepository implements EventRepository {
             }
         }
         return all;
-    }
-
-    async loadAll(events: WebhookEvent[]): Promise<void> {
-        this.events.clear();
-        this.byEndpoint.clear();
-        this.idempotency.clear();
-
-        // Events arrive in creation order, so appending to each endpoint's index
-        // reconstructs the original chronological ordering.
-        for (const event of events) {
-            this.events.set(event.id, cloneEvent(event));
-            const ids = this.byEndpoint.get(event.endpointId) ?? [];
-            ids.push(event.id);
-            this.byEndpoint.set(event.endpointId, ids);
-            if (event.idempotencyKey) {
-                this.idempotency.set(
-                    this.idempotencyIndexKey(event.endpointId, event.idempotencyKey),
-                    event.id,
-                );
-            }
-        }
     }
 
     private idempotencyIndexKey(endpointId: string, key: string): string {

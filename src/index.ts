@@ -5,8 +5,8 @@ import { PORT } from "./config.js";
 const composition = createComposition();
 const app = buildApp(composition);
 
-// Every process invocation starts from a fresh, empty snapshot file. State is
-// persisted by POST /database/dump and restored by POST /database/load.
+// Every process invocation starts from a fresh, empty snapshot file. Live state
+// is written to it by POST /database/dump.
 await composition.databaseService.initEmptyFile();
 
 const server = app.listen(PORT, () => {

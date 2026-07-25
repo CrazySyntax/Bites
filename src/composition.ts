@@ -14,7 +14,7 @@ export interface CompositionOverrides {
     config?: DeliveryConfig;
     now?: () => number;
     rng?: () => number;
-    /** Snapshot file for the dump/load endpoints (defaults to `DATABASE_FILE`). */
+    /** Snapshot file for the dump endpoint (defaults to `DATABASE_FILE`). */
     databaseFile?: string;
 }
 
@@ -56,8 +56,6 @@ export function createComposition(overrides: CompositionOverrides = {}): Composi
         overrides.databaseFile ?? DATABASE_FILE,
         endpointRepo,
         eventRepo,
-        endpointService,
-        eventService,
     );
 
     return { endpointService, eventService, databaseService, deliveryManager };

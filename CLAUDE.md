@@ -83,15 +83,13 @@ working set that is a *subset* of the database — only what's needed immediatel
 - Capacity, idempotency, and listing checks all run against the **database**, so
   they stay correct across eviction.
 
-### Persistence & recovery
+### Persistence
 
 Storage is in-memory, so a crash loses queued state. `POST /database/dump`
 serializes both repositories to a JSON file (`DATABASE_FILE`, fixed in code, not
-client-supplied); `POST /database/load` restores repositories, then calls
-`EndpointService.reload()` **before** `EventService.reload()` (so paused
-endpoints pause their queues before their backlog re-enqueues) and re-queues
-every restored `pending` event. Each process start writes a fresh empty snapshot
-(`index.ts`) so a stale file never loads implicitly.
+client-supplied) for backup or inspection. Each process start writes a fresh
+empty snapshot (`index.ts`). There is no load/restore endpoint — dump is
+write-only.
 
 ## Conventions to follow
 

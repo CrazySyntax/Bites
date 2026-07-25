@@ -78,7 +78,7 @@ export function createHarness(options: {
     config?: DeliveryConfig;
     rng?: () => number;
     /** Snapshot file for the DatabaseService; supply a temp path in tests that
-     * exercise dump/load. Defaults to a name no test should touch on disk. */
+     * exercise dump. Defaults to a name no test should touch on disk. */
     databaseFile?: string;
 }): Harness {
     const endpointRepo = new InMemoryEndpointRepository();
@@ -108,8 +108,6 @@ export function createHarness(options: {
         options.databaseFile ?? "harness-unused.json",
         endpointRepo,
         eventRepo,
-        endpointService,
-        eventService,
     );
 
     return {

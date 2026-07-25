@@ -208,18 +208,20 @@ and covered by a test.
   in `GET /events/:id` already convey progress. `GET /events/:id/…?status=`
   therefore filters over the same three values.
 
-- **A delivery that fails while its endpoint is paused kills that event
-  immediately.** If an attempt fails and the endpoint is currently `paused`, the
-  event is marked `dead` right away rather than scheduled for another retry —
-  even if it still has attempts remaining before the 5-attempt limit. The
-  reasoning: a paused endpoint is a deliberate "stop sending here" signal and is
-  not expected to recover on its own, so continuing to retry against it is wasted
-  work; failing fast surfaces the problem instead of hiding it behind backoff.
-  Only the in-flight event is affected — other events for that endpoint remain
-  `pending` and resume delivery normally once the endpoint is reactivated, and a
-  `dead` event can still be re-queued with `POST /events/:id/redeliver`.
-  (Note: this is a deliberate deviation from the plain "retry up to 5 times"
-  rule, applied narrowly to the paused case; active endpoints retry as normal.)
+- **A delivery that fails while its endpoint is paused is parked, not killed.**
+  If an attempt fails and the endpoint is currently `paused`, the event is *not*
+  marked `dead` and is *not* retried immediately against the paused endpoint.
+  Instead it stays `pending` at the head of its queue and delivery stops there;
+  its remaining attempts (up to the 5-attempt limit) run once the endpoint is
+  reactivated, and the worker loop retries that same head event in order. The
+  reasoning: pausing an endpoint is a deliberate "stop sending here for now"
+  signal, not a "give up on these events" one — so the correct response is to
+  hold the backlog and drain it on resume rather than burn retries against a
+  paused endpoint or drop events on the floor. A failed attempt still only kills
+  an event when its attempts are genuinely exhausted (5 failures against an
+  active endpoint). Other queued events likewise stay `pending` and resume in
+  order on reactivation, and a `dead` event can still be re-queued with
+  `POST /events/:id/redeliver`.
 
 - **Same-endpoint events are delivered strictly one at a time, and a failing
   event blocks the ones behind it.** When two (or more) events are queued for the
@@ -258,7 +260,7 @@ and covered by a test.
   `EventStore` in `src/delivery/stores.ts`), so the services are the single
   write-through point — a change is always reflected to the database. When an
   event reaches a terminal state — `delivered` (2xx) or `dead` (all attempts
-  exhausted, or failed while paused) — it is still written to the database with
+  exhausted) — it is still written to the database with
   that status but is **evicted from `EventService`'s in-memory map**: a terminal
   event should not occupy the process working set, yet must remain fetchable
   (`GET /events/:id`) and, for a `dead` event, redeliverable

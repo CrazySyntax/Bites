@@ -91,6 +91,14 @@ export class EndpointQueue {
                     continue;
                 }
 
+                // Failed but retryable. If the endpoint was paused during this attempt,
+                // do not retry now: leave the event at the head as `pending` and stop
+                // draining. Its remaining attempts run when the endpoint is reactivated
+                // (`resume()` wakes the loop, which retries this same head event). This
+                // is deliberate — a paused endpoint should queue its backlog, not burn
+                // retries or kill events against an endpoint we've been told to pause.
+                if (this.paused) break;
+
                 await this.attemptDelivery(event);
 
                 if (event.status === "delivered" || event.status === "dead") {
@@ -98,8 +106,8 @@ export class EndpointQueue {
                     continue;
                 }
 
-                // Failed but retryable: wait out the backoff, keeping the event at the
-                // head so nothing overtakes it, then loop to retry the same event.
+                // Wait out the backoff, keeping the event at the head so nothing
+                // overtakes it, then loop to retry the same event.
                 const delayMs = this.computeBackoffMs(event.attemptCount, this.deps.config, this.deps.rng);
                 this.logger.info("delivery.retry.scheduled", {
                     eventId: event.id,
@@ -269,16 +277,14 @@ export class EndpointQueue {
 
     private registerFailure(event: WebhookEvent): void {
         event.attemptCount += 1;
-        // Assumption: if a delivery fails while its endpoint is paused, give up on
-        // that event immediately (mark it `dead`) rather than scheduling a retry —
-        // even if it has attempts left. A paused endpoint is not expected to
-        // recover on its own, so retrying against it is wasted work. See README
-        // "Assumptions". Other queued events stay `pending` and resume normally.
-        if (this.paused || event.attemptCount >= this.deps.config.maxAttempts) {
-            event.status = "dead";
-        } else {
-            event.status = "pending";
-        }
+        // A failure only kills the event when its attempts are genuinely exhausted.
+        // Pausing is NOT a terminal condition: if the endpoint was paused during
+        // this attempt, the event stays `pending` and parks at the head of the
+        // queue (the run loop breaks out without scheduling a retry). Its remaining
+        // attempts run when the endpoint is reactivated — a pause means "stop
+        // delivering here for now", not "give up on this event". Other queued
+        // events likewise stay `pending` and resume in order on reactivation.
+        event.status = event.attemptCount >= this.deps.config.maxAttempts ? "dead" : "pending";
     }
 
     private flushIdle(): void {

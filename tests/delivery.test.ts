@@ -215,27 +215,51 @@ describe("delivery engine", () => {
         expect(harness.transport.calls.map((c) => JSON.parse(c.body).n)).toEqual([1, 2]);
     });
 
-    it("marks an event dead immediately if it fails while the endpoint is paused", async () => {
-        // The endpoint is paused mid-attempt; the in-flight delivery then fails.
-        // Per the documented assumption, that event goes straight to `dead`
-        // instead of being retried, even though it has attempts left.
+    it("parks an event that fails while its endpoint is paused, and delivers it on resume", async () => {
+        // Send an event to an ACTIVE endpoint; its first attempt fails, and during
+        // that in-flight attempt the endpoint is paused. The event must NOT die: it
+        // stays `pending`, parked at the head of the queue, and does not keep
+        // retrying against the paused endpoint. When the endpoint is reactivated the
+        // remaining attempts run and the event is delivered.
+        let paused = false;
         let harness: Harness;
         harness = createHarness({
-            responder: async (_req) => {
-                // Pause the endpoint while this first attempt is in flight, then fail it.
-                harness.manager.pause(endpoint.id);
-                return serverError();
+            responder: async (_req, callIndex) => {
+                if (callIndex === 1) {
+                    // Pause mid-attempt, then fail this first delivery.
+                    await harness.endpointService.update(endpoint.id, { status: "paused" });
+                    paused = true;
+                    return serverError();
+                }
+                // Any delivery after resume succeeds.
+                return ok();
             },
         });
         const endpoint = await createEndpoint(harness);
 
-        const event = await enqueueAndDrain(harness, endpoint.id, { hello: "world" });
+        // Enqueue against the active endpoint and let the queue quiesce. It should
+        // park after the single failed attempt (no retry while paused).
+        const { event } = await harness.eventService.accept({
+            endpointId: endpoint.id,
+            payload: { hello: "world" },
+        });
+        await harness.manager.onIdle(endpoint.id);
 
-        const stored = await harness.eventRepo.findById(event.id);
-        expect(stored?.status).toBe("dead");
-        expect(stored?.attempts).toHaveLength(1); // no retries — died on the first failure
-        expect(stored?.attemptCount).toBe(1);
-        expect(harness.transport.calls).toHaveLength(1);
+        expect(paused).toBe(true);
+        const parked = await harness.eventRepo.findById(event.id);
+        expect(parked?.status).toBe("pending"); // parked, not dead
+        expect(parked?.attempts).toHaveLength(1); // exactly one attempt was made
+        expect(parked?.attemptCount).toBe(1); // with attempts still remaining
+        expect(harness.transport.calls).toHaveLength(1); // no retries while paused
+
+        // Reactivate: the queue wakes, retries the same head event, and delivers it.
+        await harness.endpointService.update(endpoint.id, { status: "active" });
+        await harness.manager.onIdle(endpoint.id);
+
+        const delivered = await harness.eventRepo.findById(event.id);
+        expect(delivered?.status).toBe("delivered");
+        expect(delivered?.attempts).toHaveLength(2); // failed-while-paused + successful retry
+        expect(harness.transport.calls).toHaveLength(2);
     });
 
     it("redelivers a dead event: resets the counter and preserves history", async () => {

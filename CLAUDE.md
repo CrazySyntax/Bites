@@ -117,13 +117,16 @@ write-only.
   "delivering" state. An event is `pending` while queued, in flight, and during
   backoff. Don't add a transient state.
 - **Paused-endpoint rule**: a delivery that fails while its endpoint is `paused`
-  is marked `dead` immediately, even with attempts remaining
-  (`endpointQueue.ts:registerFailure`).
+  is *parked, not killed* — the event stays `pending` at the head of its queue
+  and the worker loop stops draining (`endpointQueue.ts:run` breaks on
+  `this.paused`) instead of scheduling a retry. Its remaining attempts run when
+  the endpoint is reactivated. A failure only marks an event `dead` when its
+  attempts are genuinely exhausted (`endpointQueue.ts:registerFailure`).
 
 ## Design rationale
 
 The README's **"Approach & design"** and **"Assumptions"** sections are the
 authoritative record of interpretation decisions (ordering semantics, the three
-statuses, paused-fail-dead, capacity caps as 500, the two-level storage /
+statuses, paused-endpoint parking, capacity caps as 500, the two-level storage /
 terminal-event eviction rule). Read them before changing delivery, storage, or
 status behavior — each assumption is enforced in code and covered by a test.

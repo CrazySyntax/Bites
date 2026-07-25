@@ -127,7 +127,7 @@ export class EndpointQueue {
 
             const headers: Record<string, string> = {
                 "content-type": "application/json",
-                "x-signature": this.sign(event.rawPayload, endpoint.secret),
+                "x-signature": this.sign(event.endpointId, event.rawPayload, endpoint.secret),
                 "x-event-id": event.id,
                 "x-event-timestamp": event.createdAt,
                 "x-attempt": String(attemptNumber),
@@ -191,14 +191,18 @@ export class EndpointQueue {
     }
 
     /**
-     * Computes the value for the `X-Signature` header: an HMAC-SHA256 of the exact
-     * request body bytes, keyed by the endpoint's secret.
+     * Computes the value for the `X-Signature` header: an HMAC-SHA256 keyed by the
+     * endpoint's secret, over the endpoint id joined to the exact request body
+     * bytes as `<endpointId>.<rawBody>`. Binding the endpoint id in means a
+     * signature is valid only for the endpoint it was minted for — a body
+     * captured from one endpoint can't be replayed as authentic to another.
      *
      * Format is `sha256=<hex>` (GitHub-style) so the algorithm is self-describing
      * and customers know how to reproduce it.
      */
-    private sign(rawBody: string, secret: string): string {
-        const digest = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+    private sign(endpointId: string, rawBody: string, secret: string): string {
+        const message = `${endpointId}.${rawBody}`;
+        const digest = createHmac("sha256", secret).update(message, "utf8").digest("hex");
         return `sha256=${digest}`;
     }
 

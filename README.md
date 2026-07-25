@@ -80,14 +80,17 @@ curl -s localhost:3000/events/<eventId>
 
 Each delivery is an HTTP `POST` to the endpoint's `url` with these headers:
 
-- `X-Signature: sha256=<hex>` — HMAC-SHA256 of the **exact request body** keyed by
-  the endpoint's secret. Customers verify with:
-  `HMAC_SHA256(rawBody, secret) === hex(X-Signature)`.
+- `X-Signature: sha256=<hex>` — HMAC-SHA256 keyed by the endpoint's secret, over
+  the endpoint id joined to the **exact request body** as `<endpointId>.<rawBody>`.
+  Customers verify with:
+  `HMAC_SHA256(endpointId + "." + rawBody, secret) === hex(X-Signature)`.
+  Binding the endpoint id in means a captured body can't be replayed as an
+  authentic delivery to a different endpoint.
 - `X-Event-Id`, `X-Event-Timestamp`, `X-Attempt` — delivery metadata.
 - `Content-Type: application/json`.
 
 The request body is `JSON.stringify(payload)` captured once at creation, so the
-bytes signed always equal the bytes sent.
+body bytes signed always equal the bytes sent.
 
 ## Approach & design
 

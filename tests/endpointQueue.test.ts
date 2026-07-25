@@ -213,13 +213,13 @@ function computeBackoffMs(attemptCount: number, config: DeliveryConfig, rng: () 
  * module). It is a pure function of its arguments, so we reach it on a throwaway
  * queue instance for focused unit testing — mirroring `computeBackoffMs` above.
  */
-type WithSign = { sign(rawBody: string, secret: string): string };
-function sign(rawBody: string, secret: string): string {
+type WithSign = { sign(endpointId: string, rawBody: string, secret: string): string };
+function sign(endpointId: string, rawBody: string, secret: string): string {
     const { queue } = buildQueue({
         transport: new FakeTransport((req) => respondNever(req)),
         event: makeEvent(),
     });
-    return (queue as unknown as WithSign).sign(rawBody, secret);
+    return (queue as unknown as WithSign).sign(endpointId, rawBody, secret);
 }
 
 describe("computeBackoffMs", () => {
@@ -248,24 +248,31 @@ describe("computeBackoffMs", () => {
 });
 
 describe("sign", () => {
-    it("produces an sha256-prefixed hex HMAC of the body", () => {
+    it("produces an sha256-prefixed hex HMAC of the endpoint id joined to the body", () => {
         const secret = "super-secret";
+        const endpointId = "ep-1";
         const body = JSON.stringify({ hello: "world" });
 
-        const expectedHex = createHmac("sha256", secret).update(body, "utf8").digest("hex");
+        const expectedHex = createHmac("sha256", secret)
+            .update(`${endpointId}.${body}`, "utf8")
+            .digest("hex");
 
-        expect(sign(body, secret)).toBe(`sha256=${expectedHex}`);
+        expect(sign(endpointId, body, secret)).toBe(`sha256=${expectedHex}`);
     });
 
-    it("is deterministic for the same body + secret", () => {
-        expect(sign("payload", "k")).toBe(sign("payload", "k"));
+    it("is deterministic for the same endpoint id + body + secret", () => {
+        expect(sign("ep-1", "payload", "k")).toBe(sign("ep-1", "payload", "k"));
     });
 
     it("changes when the secret changes", () => {
-        expect(sign("payload", "k1")).not.toBe(sign("payload", "k2"));
+        expect(sign("ep-1", "payload", "k1")).not.toBe(sign("ep-1", "payload", "k2"));
     });
 
     it("changes when a single byte of the body changes", () => {
-        expect(sign('{"a":1}', "k")).not.toBe(sign('{"a":2}', "k"));
+        expect(sign("ep-1", '{"a":1}', "k")).not.toBe(sign("ep-1", '{"a":2}', "k"));
+    });
+
+    it("changes when the endpoint id changes", () => {
+        expect(sign("ep-1", "payload", "k")).not.toBe(sign("ep-2", "payload", "k"));
     });
 });

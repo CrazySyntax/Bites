@@ -180,7 +180,10 @@ describe("delivery engine", () => {
 
         const call = harness.transport.calls[0];
         const expected =
-            "sha256=" + createHmac("sha256", endpoint.secret).update(call.body, "utf8").digest("hex");
+            "sha256=" +
+            createHmac("sha256", endpoint.secret)
+                .update(`${endpoint.id}.${call.body}`, "utf8")
+                .digest("hex");
         expect(call.headers["x-signature"]).toBe(expected);
         expect(call.headers["content-type"]).toBe("application/json");
         expect(call.headers["x-event-id"]).toBeTruthy();

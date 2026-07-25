@@ -42,7 +42,8 @@ export interface WebhookEvent {
     payload: unknown;
     /**
      * `JSON.stringify(payload)` captured once at creation. These are the exact
-     * bytes we sign (X-Signature) AND send as the request body, so the signature
+     * bytes sent as the request body AND the body portion of what we sign — the
+     * X-Signature is HMAC over `<endpointId>.<rawPayload>` — so the signature
      * always matches what the customer receives.
      */
     rawPayload: string;

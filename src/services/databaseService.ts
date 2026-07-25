@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type { EventRepository } from "../repositories/eventRepository.js";
 import type { Endpoint, WebhookEvent } from "../types.js";
@@ -51,6 +52,7 @@ export class DatabaseService {
     }
 
     private async writeSnapshot(snapshot: DatabaseSnapshot): Promise<void> {
+        await mkdir(dirname(this.filePath), { recursive: true });
         await writeFile(this.filePath, JSON.stringify(snapshot, null, 2), "utf8");
     }
 }

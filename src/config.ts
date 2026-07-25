@@ -1,4 +1,14 @@
+import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { loadEnv, resolveEnvPath } from "./env.js";
+
+// Repo root, derived from this module's own location rather than the process
+// working directory. `config.js` sits one level below the root in both dev
+// (`src/`, run by tsx) and prod (`dist/`, the compiled output), so `..` from
+// here resolves to the root in either case. Anchoring here keeps file paths
+// stable no matter what cwd the process was launched with (e.g. an IDE run
+// config starting in `src/`).
+const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Populate process.env before reading any value below. Done at module load so
 // every importer sees the resolved config. The env file path is taken from the
@@ -75,12 +85,17 @@ export const MAX_ENDPOINTS = envNumber("MAX_ENDPOINTS", 100);
 export const MAX_EVENTS_PER_ENDPOINT = envNumber("MAX_EVENTS_PER_ENDPOINT", 50);
 
 /**
- * Snapshot file the database dump endpoint writes, resolved relative to the
- * process working directory. A fresh, empty snapshot is written here on every
- * process start (see `index.ts`); `POST /database/dump` overwrites it with the
- * live state.
+ * Snapshot file the database dump endpoint writes. A relative `DATABASE_FILE`
+ * (including the default) is anchored to the project root, so the snapshot
+ * always lands in `<root>/stores/` regardless of the process working directory;
+ * an absolute `DATABASE_FILE` is honored as-is. A fresh, empty snapshot is
+ * written here on every process start (see `index.ts`); `POST /database/dump`
+ * overwrites it with the live state.
  */
-export const DATABASE_FILE = envString("DATABASE_FILE", "database.json");
+const databaseFileSetting = envString("DATABASE_FILE", "stores/database.json");
+export const DATABASE_FILE = isAbsolute(databaseFileSetting)
+    ? databaseFileSetting
+    : resolve(PROJECT_ROOT, databaseFileSetting);
 
 /**
  * Size of `EventService`'s in-memory working set per endpoint. The service keeps

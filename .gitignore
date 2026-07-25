@@ -5,7 +5,7 @@ node_modules/
 dist
 
 # Database snapshot file (written by POST /database/dump and on startup)
-database.json
+stores/database.json
 
 #IntelliJ IDEA
 .idea/

@@ -154,7 +154,14 @@ export class EventService implements EventStore {
 
         if (idempotencyKey) {
             const existing = await this.eventRepo.findByIdempotencyKey(endpointId, idempotencyKey);
-            if (existing) return { event: existing, deduplicated: true };
+            if (existing) {
+                this.logger.info("event.deduplicated", {
+                    endpointId,
+                    idempotencyKey,
+                    eventId: existing.id,
+                });
+                return { event: existing, deduplicated: true };
+            }
         }
 
         // Capacity guard against unbounded growth, measured against the durable

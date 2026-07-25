@@ -173,6 +173,15 @@ client-supplied. Each process start writes a fresh, empty snapshot file
 connections, pauses every queue, clears backoff timers, and aborts in-flight
 requests.
 
+**Logging** (`src/logger.ts`) — each service and the delivery queue construct
+their own `ConsoleLogger`. They log at **INFO** whenever an endpoint or event
+entity changes (with its up-to-date content) and whenever a retry is scheduled
+(including the delay in seconds), and at **ERROR** on every delivery failure or
+timeout. Output is human-readable, one line per event; the endpoint `secret` is
+**redacted**. Verbosity is controlled by `LOG_LEVEL` (`info` | `error` |
+`silent`). It is hand-rolled on `node:util` to keep the project free of runtime
+dependencies beyond Express (mirroring `src/env.ts`).
+
 ### Status filter mapping
 
 `GET /endpoints/:id/events?status=` accepts `pending | delivered | dead` — the

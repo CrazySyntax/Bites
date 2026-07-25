@@ -29,7 +29,13 @@ export class InMemoryEndpointRepository implements EndpointRepository {
     ): Promise<Endpoint | undefined> {
         const existing = this.endpoints.get(id);
         if (!existing) return undefined;
-        const updated: Endpoint = { ...existing, ...patch };
+        // A patch key set to `undefined` means "leave unchanged" — never clobber
+        // a stored field with undefined. A blind `{ ...existing, ...patch }` would
+        // wipe `status` (or `url`) whenever the caller omits it, dropping the
+        // field from the record entirely. Only apply fields that carry a value.
+        const updated: Endpoint = { ...existing };
+        if (patch.url !== undefined) updated.url = patch.url;
+        if (patch.status !== undefined) updated.status = patch.status;
         this.endpoints.set(id, updated);
         return { ...updated };
     }

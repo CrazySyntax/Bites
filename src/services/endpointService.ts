@@ -3,6 +3,7 @@ import { MAX_ENDPOINTS } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
 import type { EndpointReader } from "../delivery/stores.js";
 import { badRequest, capacityExceeded, notFound } from "../errors.js";
+import { ConsoleLogger, redactEndpoint, type Logger } from "../logger.js";
 import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type { Endpoint, EndpointStatus } from "../types.js";
 
@@ -29,6 +30,7 @@ export interface UpdateEndpointInput {
 export class EndpointService implements EndpointReader {
     private readonly memory = new Map<string, Endpoint>();
     private deliveryManager!: DeliveryManager;
+    private readonly logger: Logger = new ConsoleLogger();
 
     constructor(
         private readonly endpointRepo: EndpointRepository,
@@ -60,6 +62,7 @@ export class EndpointService implements EndpointReader {
         // Write through to both levels: memory (working set) + database.
         this.memory.set(endpoint.id, { ...endpoint });
         await this.endpointRepo.create(endpoint);
+        this.logger.info("endpoint.created", redactEndpoint(endpoint));
         return endpoint;
     }
 
@@ -75,8 +78,15 @@ export class EndpointService implements EndpointReader {
 
     async getOrThrow(id: string): Promise<Endpoint> {
         const endpoint = await this.findById(id);
-        if (!endpoint) throw notFound("endpoint not found");
+        if (!endpoint) this.endpointNotFound(id);
         return endpoint;
+    }
+
+    /** Log which endpoint was missing (aids debugging a bad id in a request) and
+     * throw the 404. `never` return lets callers use it as a throw. */
+    private endpointNotFound(id: string): never {
+        this.logger.error("endpoint.notFound", { endpointId: id });
+        throw notFound("endpoint not found");
     }
 
     async update(id: string, input: UpdateEndpointInput): Promise<Endpoint> {
@@ -91,8 +101,9 @@ export class EndpointService implements EndpointReader {
         // Reflect the change in the database, then mirror it into memory so both
         // levels agree.
         const updated = await this.endpointRepo.update(id, input);
-        if (!updated) throw notFound("endpoint not found");
+        if (!updated) this.endpointNotFound(id);
         this.memory.set(id, { ...updated });
+        this.logger.info("endpoint.updated", redactEndpoint(updated));
 
         // Drive delivery to match the new status.
         if (input.status === "paused") this.deliveryManager.pause(id);

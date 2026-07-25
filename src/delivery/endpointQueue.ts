@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import type { Attempt, WebhookEvent } from "../types.js";
 import type { DeliveryDeps } from "./deliveryDeps.js";
 import {DeliveryConfig} from "../config.js";
+import { ConsoleLogger, type Logger } from "../logger.js";
 
 interface CancellableSleep {
     /** Resolves when the delay elapses, or immediately if cancelled. */
@@ -32,6 +33,7 @@ export class EndpointQueue {
     private backoff?: CancellableSleep;
     private activeAbort?: AbortController;
     private idleResolvers: Array<() => void> = [];
+    private readonly logger: Logger = new ConsoleLogger();
 
     constructor(
         private readonly endpointId: string,
@@ -99,6 +101,12 @@ export class EndpointQueue {
                 // Failed but retryable: wait out the backoff, keeping the event at the
                 // head so nothing overtakes it, then loop to retry the same event.
                 const delayMs = this.computeBackoffMs(event.attemptCount, this.deps.config, this.deps.rng);
+                this.logger.info("delivery.retry.scheduled", {
+                    eventId: event.id,
+                    endpointId: this.endpointId,
+                    attempt: event.attemptCount,
+                    inSeconds: delayMs / 1000,
+                });
                 this.backoff = this.cancellableSleep(delayMs);
                 await this.backoff.promise;
                 this.backoff = undefined;
@@ -121,13 +129,15 @@ export class EndpointQueue {
         const start = this.deps.now();
 
         let attempt: Attempt;
+        let signature: string | undefined;
         try {
             const endpoint = await this.deps.endpoints.findById(event.endpointId);
             if (!endpoint) throw new Error("endpoint not found");
 
+            signature = this.sign(event.endpointId, event.rawPayload, endpoint.secret);
             const headers: Record<string, string> = {
                 "content-type": "application/json",
-                "x-signature": this.sign(event.endpointId, event.rawPayload, endpoint.secret),
+                "x-signature": signature,
                 "x-event-id": event.id,
                 "x-event-timestamp": event.createdAt,
                 "x-attempt": String(attemptNumber),
@@ -149,7 +159,21 @@ export class EndpointQueue {
 
             if (response.statusCode >= 200 && response.statusCode < 300) {
                 event.status = "delivered";
+                this.logger.info("delivery.succeeded", {
+                    eventId: event.id,
+                    endpointId: event.endpointId,
+                    statusCode: response.statusCode,
+                    attempt: attemptNumber,
+                    signature,
+                });
             } else {
+                this.logger.error("delivery.failed", {
+                    eventId: event.id,
+                    endpointId: event.endpointId,
+                    statusCode: response.statusCode,
+                    attempt: attemptNumber,
+                    signature,
+                });
                 this.registerFailure(event);
             }
         } catch (err) {
@@ -160,6 +184,13 @@ export class EndpointQueue {
                 error,
                 durationMs: this.deps.now() - start,
             };
+            this.logger.error("delivery.failed", {
+                eventId: event.id,
+                endpointId: event.endpointId,
+                reason: error,
+                attempt: attemptNumber,
+                signature,
+            });
             this.registerFailure(event);
         } finally {
             clearTimeout(timeout);

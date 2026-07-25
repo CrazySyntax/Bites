@@ -99,9 +99,20 @@ write-only.
   auto-forwards rejected async handlers, so route handlers can just `throw`.
 - **Capacity limits deliberately return HTTP 500** (not 429/507) — per the spec;
   don't "fix" this.
-- **Signing**: `X-Signature: sha256=<hex>` is HMAC-SHA256 over `rawPayload` —
-  `JSON.stringify(payload)` captured once at creation. The bytes signed must
-  equal the bytes sent, so never re-stringify the payload at delivery time.
+- **Signing**: `X-Signature: sha256=<hex>` is HMAC-SHA256 (keyed by the endpoint
+  secret) over `<endpointId>.<rawPayload>` — `rawPayload` is
+  `JSON.stringify(payload)` captured once at creation. Binding the endpoint id in
+  stops a captured body being replayed to a different endpoint. The bytes signed
+  must equal the bytes sent, so never re-stringify the payload at delivery time.
+- **Logging** (`src/logger.ts`): each service/queue constructs its **own**
+  `private readonly logger = new ConsoleLogger()` — the logger is *not* injected
+  or shared. Never raw `console.*` in the engine/services. INFO on entity change
+  / retry schedule, ERROR on delivery failure/timeout. Log endpoints via
+  `redactEndpoint()` (the `secret` is the signing key). Verbosity is uniform via
+  `LOG_LEVEL` (`info` | `error` | `silent`), read by every `ConsoleLogger` at
+  construction. Tests set `LOG_LEVEL=silent` in `jest.setup.ts` to stay quiet;
+  `logger.test.ts` builds `new ConsoleLogger(level)` with an explicit level and
+  spies on the console.
 - **Event statuses are exactly `pending | delivered | dead`** — there is no
   "delivering" state. An event is `pending` while queued, in flight, and during
   backoff. Don't add a transient state.

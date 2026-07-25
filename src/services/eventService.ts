@@ -8,6 +8,7 @@ import {
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
 import type { EndpointReader, EventStore } from "../delivery/stores.js";
 import { badRequest, capacityExceeded, conflict, notFound } from "../errors.js";
+import { ConsoleLogger, type Logger } from "../logger.js";
 import type {
     EventRepository,
     ListEventsResult,
@@ -68,6 +69,7 @@ export class EventService implements EventStore {
     /** endpointId -> set of event ids currently resident in `memory`. */
     private readonly residentByEndpoint = new Map<string, Set<string>>();
     private deliveryManager!: DeliveryManager;
+    private readonly logger: Logger = new ConsoleLogger();
 
     constructor(
         private readonly eventRepo: EventRepository,
@@ -148,7 +150,7 @@ export class EventService implements EventStore {
         }
 
         const endpoint = await this.endpoints.findById(endpointId);
-        if (!endpoint) throw notFound("endpoint not found");
+        if (!endpoint) this.endpointNotFound(endpointId);
 
         if (idempotencyKey) {
             const existing = await this.eventRepo.findByIdempotencyKey(endpointId, idempotencyKey);
@@ -180,6 +182,7 @@ export class EventService implements EventStore {
         // lives in the database only until the endpoint's cache drains.
         await this.eventRepo.create(event);
         this.cachePut(event);
+        this.logger.info("event.created", event);
         if (idempotencyKey) {
             await this.eventRepo.saveIdempotencyKey(endpointId, idempotencyKey, event.id);
         }
@@ -210,6 +213,7 @@ export class EventService implements EventStore {
      */
     async save(event: WebhookEvent): Promise<WebhookEvent> {
         await this.eventRepo.save(event);
+        this.logger.info("event.changed", event);
 
         if (event.status === "dead" || event.status === "delivered") {
             this.cacheEvict(event);
@@ -241,9 +245,16 @@ export class EventService implements EventStore {
         return event;
     }
 
+    /** Log which endpoint was missing (aids debugging a bad endpointId in a
+     * request) and throw the 404. `never` return lets callers use it as a throw. */
+    private endpointNotFound(endpointId: string): never {
+        this.logger.error("endpoint.notFound", { endpointId });
+        throw notFound("endpoint not found");
+    }
+
     async listForEndpoint(input: ListEndpointEventsInput): Promise<ListEventsResult> {
         const endpoint = await this.endpoints.findById(input.endpointId);
-        if (!endpoint) throw notFound("endpoint not found");
+        if (!endpoint) this.endpointNotFound(input.endpointId);
 
         const status = this.parseStatusFilter(input.status);
         const limit = this.parseLimit(input.limit);

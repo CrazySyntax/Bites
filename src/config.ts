@@ -56,6 +56,13 @@ export const defaultDeliveryConfig: DeliveryConfig = {
 
 export const PORT = envNumber("PORT", 3000);
 
+/**
+ * Console log verbosity, read by every `ConsoleLogger` (`src/logger.ts`).
+ * `info` (default) logs entity changes and retry schedules; `error` suppresses
+ * those and logs only delivery failures/timeouts; `silent` disables all logging.
+ */
+export const LOG_LEVEL = envString("LOG_LEVEL", "info");
+
 /** Pagination defaults for the endpoint-events listing. */
 export const DEFAULT_PAGE_LIMIT = envNumber("DEFAULT_PAGE_LIMIT", 20);
 export const MAX_PAGE_LIMIT = envNumber("MAX_PAGE_LIMIT", 100);

@@ -65,6 +65,32 @@ describe("in-memory repositories return isolated copies", () => {
             const stored = await repo.findById("ep-1");
             expect(stored?.status).toBe("paused");
         });
+
+        it("leaves omitted fields untouched (partial patch)", async () => {
+            const repo = new InMemoryEndpointRepository();
+            await repo.create(makeEndpoint());
+
+            // Patch only `status`; `url` must survive, not be wiped to undefined.
+            await repo.update("ep-1", { status: "paused" });
+
+            const stored = await repo.findById("ep-1");
+            expect(stored?.status).toBe("paused");
+            expect(stored?.url).toBe("http://hook.test/x");
+        });
+
+        it("treats an explicit `undefined` field as 'leave unchanged'", async () => {
+            const repo = new InMemoryEndpointRepository();
+            await repo.create(makeEndpoint());
+
+            // A patch carrying `undefined` (e.g. status omitted from the request
+            // body) must not drop the stored field. Regression: a blind spread
+            // wiped `status` off the record entirely.
+            await repo.update("ep-1", { url: "http://hook.test/y", status: undefined });
+
+            const stored = await repo.findById("ep-1");
+            expect(stored?.url).toBe("http://hook.test/y");
+            expect(stored?.status).toBe("active");
+        });
     });
 
     describe("events", () => {

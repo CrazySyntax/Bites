@@ -13,4 +13,7 @@ export default {
     },
     testMatch: ["**/*.test.ts"],
     clearMocks: true,
+    // Runs before any source module loads, so LOG_LEVEL is `silent` by the time
+    // config.ts is imported and the app's ConsoleLoggers stay quiet in the suite.
+    setupFiles: ["<rootDir>/jest.setup.ts"],
 };

@@ -31,9 +31,9 @@ export interface EventRepository {
     list(query: ListEventsQuery): Promise<ListEventsResult>;
 
     /** Look up an event previously created with the given idempotency key. */
-    findByIdempotencyKey(endpointId: string, key: string): Promise<WebhookEvent | undefined>;
+    findByIdempotencyKey(key: string): Promise<WebhookEvent | undefined>;
     /** Record the mapping from an idempotency key to an event id. */
-    saveIdempotencyKey(endpointId: string, key: string, eventId: string): Promise<void>;
+    saveIdempotencyKey(key: string, eventId: string): Promise<void>;
 
     /** Number of events belonging to an endpoint (used to enforce the capacity limit). */
     countByEndpoint(endpointId: string): Promise<number>;

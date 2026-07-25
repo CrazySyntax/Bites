@@ -153,7 +153,7 @@ export class EventService implements EventStore {
         if (!endpoint) this.endpointNotFound(endpointId);
 
         if (idempotencyKey) {
-            const existing = await this.eventRepo.findByIdempotencyKey(endpointId, idempotencyKey);
+            const existing = await this.eventRepo.findByIdempotencyKey(idempotencyKey);
             if (existing) {
                 this.logger.info("event.deduplicated", {
                     endpointId,
@@ -190,7 +190,7 @@ export class EventService implements EventStore {
         this.cachePut(event);
         this.logger.info("event.created", event);
         if (idempotencyKey) {
-            await this.eventRepo.saveIdempotencyKey(endpointId, idempotencyKey, event.id);
+            await this.eventRepo.saveIdempotencyKey(idempotencyKey, event.id);
         }
 
         // Enqueue after persistence so GET /events/:id is consistent immediately.

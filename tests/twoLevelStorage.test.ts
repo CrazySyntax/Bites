@@ -102,9 +102,9 @@ describe("two-level storage", () => {
         expect(viaService?.status).toBe("paused");
     });
 
-    it("keeps capacity + idempotency correct after dead events are evicted", async () => {
-        // A dead event stays counted in the database, so it still occupies its
-        // slot toward the per-endpoint cap and its idempotency key still dedupes.
+    it("keeps a dead event counted in the database after it is evicted from memory", async () => {
+        // A dead event is evicted from memory but stays counted in the database, so
+        // it still occupies its slot toward the per-endpoint capacity cap.
         const harness = createHarness({ responder: serverError });
         const endpoint = await createEndpoint(harness);
 
@@ -116,15 +116,27 @@ describe("two-level storage", () => {
         await harness.manager.onIdle(endpoint.id);
         expect(harness.eventService.inMemoryCount()).toBe(0); // died + evicted
 
-        // Same idempotency key still resolves to the original (now dead) event.
-        const second = await harness.eventService.accept({
+        // Re-accepting the same key resolves back to the (now dead) original event
+        // from the database — dedup works even after the event left memory.
+        const repeat = await harness.eventService.accept({
             endpointId: endpoint.id,
             payload: { n: 1 },
             idempotencyKey: "k1",
         });
-        expect(second.deduplicated).toBe(true);
-        expect(second.event.id).toBe(first.event.id);
-        expect(second.event.status).toBe("dead");
+        expect(repeat.deduplicated).toBe(true);
+        expect(repeat.event.id).toBe(first.event.id);
+        expect(repeat.event.status).toBe("dead");
+
+        // A distinct key creates a fresh event; the dead one is still persisted, so
+        // both count toward the per-endpoint cap.
+        const second = await harness.eventService.accept({
+            endpointId: endpoint.id,
+            payload: { n: 2 },
+            idempotencyKey: "k2",
+        });
+        expect(second.deduplicated).toBe(false);
+        expect(second.event.id).not.toBe(first.event.id);
+        expect(await harness.eventRepo.countByEndpoint(endpoint.id)).toBe(2);
     });
 
     it("retains a freshly-accepted (pending) event in memory", async () => {

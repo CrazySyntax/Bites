@@ -68,7 +68,7 @@ describe("HTTP API", () => {
         expect(res.status).toBe(404);
     });
 
-    it("dedupes events sharing an Idempotency-Key: same id, delivered once", async () => {
+    it("dedupes a repeat POST sharing an Idempotency-Key", async () => {
         const harness = createHarness({ responder: ok });
         const app = appFor(harness);
         const endpoint = await harness.endpointService.create("http://hook.test/x");
@@ -77,13 +77,45 @@ describe("HTTP API", () => {
         const first = await request(app).post("/events").set("Idempotency-Key", "k1").send(body);
         const second = await request(app).post("/events").set("Idempotency-Key", "k1").send(body);
 
+        // The key resolves back to the original event, so the retry is a dedupe
+        // hit (200) returning that same event rather than a fresh accept (202).
         expect(first.status).toBe(202);
-        expect(second.status).toBe(200); // dedupe hit
+        expect(second.status).toBe(200);
         expect(second.body.deduplicated).toBe(true);
         expect(second.body.eventId).toBe(first.body.eventId);
 
         await harness.manager.onIdle(endpoint.id);
         expect(harness.transport.calls).toHaveLength(1); // delivered only once
+    });
+
+    it("scopes the Idempotency-Key globally: same key on two endpoints IS a dupe", async () => {
+        const harness = createHarness({ responder: ok });
+        const app = appFor(harness);
+        const endpointA = await harness.endpointService.create("http://hook.test/a");
+        const endpointB = await harness.endpointService.create("http://hook.test/b");
+
+        // The idempotency key is indexed globally (not per endpoint), so the same
+        // key seen on a second endpoint resolves back to the first event and is
+        // deduplicated — even though it targets a different endpoint.
+        const first = await request(app)
+            .post("/events")
+            .set("Idempotency-Key", "k1")
+            .send({ endpointId: endpointA.id, payload: { n: 1 } });
+        const second = await request(app)
+            .post("/events")
+            .set("Idempotency-Key", "k1")
+            .send({ endpointId: endpointB.id, payload: { n: 1 } });
+
+        expect(first.status).toBe(202);
+        expect(second.status).toBe(200); // dedupe hit
+        expect(second.body.deduplicated).toBe(true);
+        expect(second.body.eventId).toBe(first.body.eventId);
+
+        // Only the first event was created (against endpoint A); it delivers once
+        // and the second endpoint never receives anything.
+        await harness.manager.onIdle(endpointA.id);
+        await harness.manager.onIdle(endpointB.id);
+        expect(harness.transport.calls).toHaveLength(1);
     });
 
     it("lists an endpoint's events newest-first, filtered by status, paginated", async () => {

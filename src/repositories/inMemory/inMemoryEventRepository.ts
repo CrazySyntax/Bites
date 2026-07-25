@@ -75,16 +75,15 @@ export class InMemoryEventRepository implements EventRepository {
     }
 
     async findByIdempotencyKey(
-        endpointId: string,
         key: string,
     ): Promise<WebhookEvent | undefined> {
-        const eventId = this.idempotency.get(this.idempotencyIndexKey(endpointId, key));
+        const eventId = this.idempotency.get(key);
         const found = eventId ? this.events.get(eventId) : undefined;
         return found ? cloneEvent(found) : undefined;
     }
 
-    async saveIdempotencyKey(endpointId: string, key: string, eventId: string): Promise<void> {
-        this.idempotency.set(this.idempotencyIndexKey(endpointId, key), eventId);
+    async saveIdempotencyKey(key: string, eventId: string): Promise<void> {
+        this.idempotency.set(key, eventId);
     }
 
     async countByEndpoint(endpointId: string): Promise<number> {
@@ -119,7 +118,4 @@ export class InMemoryEventRepository implements EventRepository {
         return all;
     }
 
-    private idempotencyIndexKey(endpointId: string, key: string): string {
-        return `${endpointId}:${key}`;
-    }
 }

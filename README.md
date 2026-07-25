@@ -125,10 +125,12 @@ transport and a shrunk backoff config (see `tests/harness.ts`).
 - Backoff waits use a cancellable `setTimeout` so pause/shutdown can interrupt
   them and tests don't leak timers.
 
-**Idempotency** — `POST /events` with an `Idempotency-Key` is deduped per
-endpoint (`endpointId:key`). A repeat returns the original `eventId` with
-**200** + `{ deduplicated: true }` (versus **202** for a fresh accept) and does
-**not** enqueue a second delivery. The existence-check + create is kept free of an
+**Idempotency** — `POST /events` with an `Idempotency-Key` is deduped
+**globally** (the key is indexed on its own, not scoped to an endpoint), so the
+same key seen again — even against a different endpoint — resolves back to the
+original event. A repeat returns the original `eventId` with **200** +
+`{ deduplicated: true }` (versus **202** for a fresh accept) and does **not**
+enqueue a second delivery. The existence-check + create is kept free of an
 intervening `await`, so two concurrent same-key requests can't both create an event.
 
 **Pause / resume** — pausing sets the endpoint status and stops its worker (and

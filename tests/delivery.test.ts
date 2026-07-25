@@ -196,12 +196,18 @@ describe("delivery engine", () => {
 
         await harness.endpointService.update(endpoint.id, { status: "paused" });
 
-        await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 1 } });
-        await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 2 } });
+        const { event: e1 } = await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 1 } });
+        const { event: e2 } = await harness.eventService.accept({ endpointId: endpoint.id, payload: { n: 2 } });
 
         // Give the (paused) queue a chance to run — it should not deliver anything.
         await harness.manager.onIdle(endpoint.id);
         expect(harness.transport.calls).toHaveLength(0);
+
+        // The events aren't dropped or marked dead: they wait as `pending` (no
+        // attempt was ever made) until the endpoint resumes.
+        expect((await harness.eventRepo.findById(e1.id))?.status).toBe("pending");
+        expect((await harness.eventRepo.findById(e2.id))?.status).toBe("pending");
+        expect((await harness.eventRepo.findById(e1.id))?.attempts).toHaveLength(0);
 
         await harness.endpointService.update(endpoint.id, { status: "active" });
         await harness.manager.onIdle(endpoint.id);

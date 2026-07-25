@@ -50,16 +50,18 @@ function cloneEvent(event: WebhookEvent): WebhookEvent {
  * here rather than touching the repository directly.
  *
  * Bounded working set: to cap the heap, `memory` holds at most
- * {@link MAX_IN_MEMORY_EVENTS_PER_ENDPOINT} non-dead events **per endpoint**
- * (tracked in `residentByEndpoint`). Once an endpoint is at that limit, a new
- * event is persisted to the database only and not cached. When an endpoint's
- * resident count falls to zero (all its cached events became terminal), the
- * service reloads up to that many recent non-dead events from the database.
+ * {@link MAX_IN_MEMORY_EVENTS_PER_ENDPOINT} non-terminal (`pending`) events
+ * **per endpoint** (tracked in `residentByEndpoint`). Once an endpoint is at that
+ * limit, a new event is persisted to the database only and not cached. When an
+ * endpoint's resident count falls to zero (all its cached events became
+ * terminal), the service reloads up to that many recent pending events from the
+ * database.
  *
- * Dead-event rule: when an event becomes `dead` it is still written to the
- * database (so it can be inspected and redelivered later) but is **evicted from
- * memory** — a terminal-failed event should not occupy the process working set.
- * Reads fall back to the database, so `getOrThrow`/`redeliver` still find it.
+ * Terminal-event rule: when an event becomes terminal — `delivered` (2xx) or
+ * `dead` (attempts exhausted) — it is still written to the database (so it can be
+ * inspected, listed, and a dead one redelivered later) but is **evicted from
+ * memory**: a terminal event should not occupy the process working set. Reads
+ * fall back to the database, so `getOrThrow`/`redeliver` still find it.
  */
 export class EventService implements EventStore {
     private readonly memory = new Map<string, WebhookEvent>();
@@ -113,7 +115,7 @@ export class EventService implements EventStore {
 
     /**
      * If an endpoint has no resident events left, repopulate the working set with
-     * up to the per-endpoint cap of recent non-dead events from the database.
+     * up to the per-endpoint cap of recent pending events from the database.
      */
     private async reloadIfEmpty(endpointId: string): Promise<void> {
         if (this.residentIds(endpointId).size > 0) return;
@@ -135,12 +137,12 @@ export class EventService implements EventStore {
      * crashed process left off. Existing working-set state is dropped first.
      *
      * The working set is repopulated per endpoint up to the per-endpoint cap
-     * (newest-first, non-dead), matching the steady-state invariant; events
-     * beyond the cap and dead events live in the database only and are resolved
-     * lazily on read. Pending events are re-enqueued in creation order per
-     * endpoint so the engine preserves the original ordering — an event not
-     * resident in memory is still found via the database fallback in `findById`,
-     * so every pending event is deliverable regardless of the cap.
+     * (newest-first, pending only), matching the steady-state invariant; events
+     * beyond the cap and terminal (delivered/dead) events live in the database
+     * only and are resolved lazily on read. Pending events are re-enqueued in
+     * creation order per endpoint so the engine preserves the original ordering —
+     * an event not resident in memory is still found via the database fallback in
+     * `findById`, so every pending event is deliverable regardless of the cap.
      *
      * Call `EndpointService.reload()` first so paused endpoints have their queues
      * paused before events are enqueued (a paused queue holds the backlog without
@@ -242,14 +244,15 @@ export class EventService implements EventStore {
     /**
      * Persists a mutated event (implements EventStore). Always reflects the
      * change to the database; then keeps memory as the live working set — except
-     * a `dead` event is evicted from memory (it lives only in the database until
-     * redelivered). When evicting a dead event empties an endpoint's working set,
-     * the endpoint is repopulated from the database (up to the per-endpoint cap).
+     * a terminal event (`dead` or `delivered`) is evicted from memory (it lives
+     * only in the database, where it can still be read/listed/redelivered). When
+     * evicting a terminal event empties an endpoint's working set, the endpoint is
+     * repopulated from the database (up to the per-endpoint cap).
      */
     async save(event: WebhookEvent): Promise<WebhookEvent> {
         await this.eventRepo.save(event);
 
-        if (event.status === "dead") {
+        if (event.status === "dead" || event.status === "delivered") {
             this.cacheEvict(event);
             await this.reloadIfEmpty(event.endpointId);
         } else {

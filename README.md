@@ -60,7 +60,6 @@ npm start -- --env-path ./config/prod.env  # or point at a specific file
 | `POST` | `/events/:id/redeliver` | Re-queue a `dead` event (attempt counter resets, history preserved). |
 | `POST` | `/database/dump` | Snapshot the whole database to a file. Returns `{ dumped, endpoints, events }`. |
 | `POST` | `/database/load` | Restore the database from the snapshot file and rehydrate the services (restored `pending` events resume delivery). Returns `{ loaded, endpoints, events }`. |
-| `GET` | `/health` | Liveness check. |
 
 ### Quick example
 
@@ -142,7 +141,24 @@ async, so a real database is a drop-in replacement without changing any caller.
 The delivery engine reads/persists through the services via the narrow
 `EndpointReader` / `EventStore` seams (`src/delivery/stores.ts`), so the services
 stay the single write-through point. See the two-level-storage assumption for the
-`dead`-event eviction rule.
+terminal-event (`delivered`/`dead`) eviction rule. 
+
+The database layer is the source of truth.
+Every change to events or endpoints is persisted to the database. We do so in order to 
+avoid losing data on process crash. In a real production high-throughput system, the app may not write
+directly to the database, but instead use a message queue to decouple the delivery from the persistence.
+Every change to events or endpoints will be produced to the queue, and a separate consumer will consume
+a bulk of messages and write the entire bulk to the database.
+This approach may cause some delay in persisting the data, but we can definitely live with that.
+The data that we need immediately, we will keep in EventService and EndpointService classes.
+
+The in-memory data in EventService and EndpointService 
+is a subset of the data in the database. We keep there only data that we need immediately
+and we cannot tolerate availability or consistency. These are:
+- all endpoints entities (id, url, secret, status). Once a user calls POST /event, we need to perfectly 
+know the data of the endpoint to the exact time of the call.
+- For each endpoint, 10 most recent events in "pending" status. "Devlivered" and "dead" events
+are not needed immediately, and we can fetch them from the database when needed.
 
 **Snapshot persistence** (`src/services/databaseService.ts`, `routes/database.ts`)
 — because the store is in-memory, a crash loses state. `POST /database/dump`
@@ -226,119 +242,43 @@ and covered by a test.
   (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); a real datastore would raise or
   remove them.
 
-- **Storage has two levels, and `dead` events are archived, not memory-resident.**
+- **Storage has two levels, and terminal (`delivered`/`dead`) events are archived,
+  not memory-resident.**
   `EndpointService` / `EventService` each own an in-memory working set (a `Map`)
   and write every change *through* to the `repositories/` layer, which stands in
   for the database (swappable for real DB queries without touching callers). The
   delivery engine reads and persists through the services (`EndpointReader` /
   `EventStore` in `src/delivery/stores.ts`), so the services are the single
   write-through point — a change is always reflected to the database. When an
-  event becomes `dead` (all attempts exhausted, or failed while paused) it is
-  still written to the database with `status: "dead"` but is **evicted from
-  `EventService`'s in-memory map**: a terminal-failed event should not occupy the
-  process working set, yet must remain fetchable (`GET /events/:id`) and
-  redeliverable (`POST /events/:id/redeliver`). Both operations fall back to the
-  database when memory misses, and `redeliver` re-admits the event to memory.
-  Listing, capacity, and idempotency checks run against the database, so they
-  stay correct across eviction (a dead event still counts toward the cap and
-  still dedupes by key). Delivered events remain in memory; only the `dead` state
-  is evicted, per the stated rule. (`inMemoryCount()` on `EventService` exposes
-  the working-set size as an operational metric.)
+  event reaches a terminal state — `delivered` (2xx) or `dead` (all attempts
+  exhausted, or failed while paused) — it is still written to the database with
+  that status but is **evicted from `EventService`'s in-memory map**: a terminal
+  event should not occupy the process working set, yet must remain fetchable
+  (`GET /events/:id`) and, for a `dead` event, redeliverable
+  (`POST /events/:id/redeliver`). Both operations fall back to the database when
+  memory misses, and `redeliver` re-admits the event to memory. Listing,
+  capacity, and idempotency checks run against the database, so they stay correct
+  across eviction (a terminal event still counts toward the cap and still dedupes
+  by key). Only `pending` events stay memory-resident. (`inMemoryCount()` on
+  `EventService` exposes the working-set size as an operational metric.)
 
 - **`EventService`'s in-memory working set is bounded to the 10 most recent
-  non-dead events per endpoint.** The database holds every non-dead event, but to
+  `pending` events per endpoint.** The database holds every event, but to
   avoid heap collapse under many endpoints the service caps its resident copy at
   `MAX_IN_MEMORY_EVENTS_PER_ENDPOINT` (10) events *per endpoint*. Consequences:
   once an endpoint already has 10 resident events, a newly accepted event is
   written to the database **only** and not cached; and when an endpoint's
   resident count falls to 0 (its cached events all became `delivered`/`dead` and
   were evicted), the service reloads up to 10 of that endpoint's most recent
-  non-dead events from the database on the next `save`. Reads for a
+  `pending` events from the database on the next `save`. Reads for a
   database-only event fall back to the database transparently, so correctness is
   unaffected — the bound only limits how much lives in process memory.
   (`inMemoryCountForEndpoint(endpointId)` exposes the per-endpoint resident count
   as an operational metric.)
 
-## Tests
-
-`npm test`. The suite (`*.test.ts`) prioritizes the parts most worth trusting:
-
-- **Ordering** — a head event that fails twice then succeeds is not overtaken.
-- **Head-of-line blocking** — a first event that fails all 5 attempts holds the
-  second until it is `dead` (see [Assumptions](#assumptions)).
-- **Concurrency isolation** — a hung endpoint doesn't delay a healthy one.
-- **Retry → dead** — 5 attempts recorded, then `dead`.
-- **Timeout as failure** — an aborted request counts toward the limit.
-- **Idempotency** — same key ⇒ same event id, delivered once.
-- **Signature** — `X-Signature` equals the HMAC of the exact bytes sent.
-- **Pause/resume** and **redeliver** (history preserved, counter reset).
-- **Fail-while-paused** — an attempt failing on a paused endpoint goes straight to
-  `dead` (see [Assumptions](#assumptions)).
-- **Capacity limits** — the 101st endpoint and an endpoint's 51st event are each
-  rejected with **500** (see [Assumptions](#assumptions)).
-- **Two-level storage** — a `dead` event is evicted from memory yet persisted to
-  the database, still fetchable/listable, and redeliverable from the database
-  (see [Assumptions](#assumptions)); an endpoint update reflects in both levels.
-- **Bounded cache** — an endpoint's working set is capped at 10 non-dead events
-  (the 11th is database-only yet still resolvable), each endpoint is bounded
-  independently, and the cache reloads from the database once it drains
-  (see [Assumptions](#assumptions)).
-- **Repository isolation** — mutating a returned entity never leaks into the
-  store; a change lands only via `create`/`save`/`update`.
-- **Database dump/load** — a round-trip through the snapshot file restores
-  endpoints and events into a fresh graph; `dead` events (with history) survive
-  and stay redeliverable; restored `pending` events re-queue and deliver; a
-  paused endpoint's backlog stays undelivered until resumed.
-- **HTTP integration** (supertest): the 202/200 contract, validation, listing,
-  pagination, and the `POST /database/dump` → `POST /database/load` round-trip.
-
-Tests inject a fake HTTP transport and a tiny backoff config, so they're fast and
-never hit the network.
-
-## Project layout
-
-```
-src/
-  index.ts             entrypoint: compose deps, listen, graceful shutdown
-  app.ts               buildApp(services) -> Express app (no listen; used by tests)
-  composition.ts       wires the object graph (repos + engine + services)
-  config.ts            port + delivery tuning (attempts, timeout, backoff)
-  types.ts             Endpoint / WebhookEvent / Attempt domain types
-  errors.ts            AppError + status helpers
-  delivery/            the core engine
-    deliveryManager.ts   Map<endpointId, EndpointQueue>
-    endpointQueue.ts     per-endpoint FIFO worker loop (ordering, retry, backoff)
-    httpTransport.ts     HttpTransport interface + FetchTransport
-    stores.ts            EndpointReader / EventStore seams (engine -> services)
-    signer.ts            HMAC-SHA256 signing
-    backoff.ts           exponential backoff + jitter (pure)
-    sleep.ts             cancellable delay
-  repositories/        the "database": storage interfaces + inMemory/ impls
-  services/            endpointService, eventService (own in-memory working set),
-                       databaseService (snapshot dump/load)
-  routes/              endpoints, events, database, health, serialize
-  middleware/          errorHandler
-tests/                 all tests + the shared harness (fake transport)
-  harness.ts           test-only object graph + fake HTTP transport
-  *.test.ts            unit + HTTP integration suites
-```
-
-## Deliberate scope cuts
-
-Chosen to fit the time budget; each is a clean extension point rather than a
-rewrite:
-
-- **In-memory storage only** — state lives in memory, so an unexpected crash
-  loses anything not snapshotted. `POST /database/dump` / `POST /database/load`
-  provide explicit file-based persistence (dump before shutdown, load after
-  restart), but there is no automatic periodic flush; the repository interfaces
-  make a real store a drop-in swap.
-- **Redeliver re-inserts at the queue tail**, not the head — the event already
-  lost its ordering slot, so re-blocking the whole queue behind stale work would
-  be worse.
-- **Idempotency ignores payload mismatch** — the same key always returns the
-  original event; a stricter impl would `409` on a differing payload.
-- **Offset/limit pagination** — simple and not cursor-stable under concurrent
-  inserts.
-- **Hand-rolled validation** (no schema library), **no auth / rate limiting**,
-  **single process** (horizontal scaling would need a shared queue/store).
+## Manual testing
+We can use the following public API in order to test the webhook delivery service manually:
+curl -X POST "https://httpbin.dev/delay/{n}" \
+     -H "Content-Type: application/json" \
+     -d '{"test": "data"}'
+It can simulate a webhook that returns within n seconds delay 

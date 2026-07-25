@@ -111,6 +111,52 @@ describe("delivery engine", () => {
         expect(stored?.attempts.map((a) => a.attemptNumber)).toEqual([1, 2, 3, 4, 5]);
     });
 
+    it("persists a retryable failure as pending in the database between attempts", async () => {
+        // First attempt fails but retries remain, so the event is put back to
+        // `pending` and must be written through to the database as such. We gate
+        // the second attempt so we can observe the persisted state mid-lifecycle,
+        // before the event reaches a terminal (`delivered`) status.
+        let attempt = 0;
+        let releaseSecond!: () => void;
+        const secondGate = new Promise<void>((resolve) => {
+            releaseSecond = resolve;
+        });
+        let signalSecondReached!: () => void;
+        const secondReached = new Promise<void>((resolve) => {
+            signalSecondReached = resolve;
+        });
+
+        const harness = createHarness({
+            responder: async () => {
+                attempt += 1;
+                if (attempt === 1) return serverError(); // fail once -> pending + backoff
+                signalSecondReached(); // second attempt is now in flight
+                await secondGate; // hold it here so we can inspect the DB
+                return ok();
+            },
+        });
+        const endpoint = await createEndpoint(harness);
+
+        const { event } = await harness.eventService.accept({
+            endpointId: endpoint.id,
+            payload: { hello: "world" },
+        });
+
+        // By the time the second attempt starts, the first failure has already been
+        // persisted: the database reflects `pending` with one recorded attempt.
+        await secondReached;
+        const midFlight = await harness.eventRepo.findById(event.id);
+        expect(midFlight?.status).toBe("pending");
+        expect(midFlight?.attemptCount).toBe(1);
+        expect(midFlight?.attempts).toHaveLength(1);
+
+        // Let the second attempt succeed and confirm the database now reflects it.
+        releaseSecond();
+        await harness.manager.onIdle(endpoint.id);
+        const done = await harness.eventRepo.findById(event.id);
+        expect(done?.status).toBe("delivered");
+    });
+
     it("counts a timeout as a failed attempt", async () => {
         // Endpoint always hangs -> every attempt aborts at the timeout.
         const harness = createHarness({ responder: (req) => respondNever(req) });

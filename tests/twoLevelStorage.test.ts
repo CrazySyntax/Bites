@@ -15,17 +15,22 @@ async function enqueueAndDrain(harness: Harness, endpointId: string, payload: un
 }
 
 describe("two-level storage", () => {
-    it("keeps a delivered event in memory and persists it to the database", async () => {
+    it("evicts a delivered event from memory but persists it to the database", async () => {
         const harness = createHarness({ responder: ok });
         const endpoint = await createEndpoint(harness);
 
         const event = await enqueueAndDrain(harness, endpoint.id, { hello: "world" });
 
-        // Database (repository) reflects the delivered state...
+        // Persisted to the database with status delivered (still inspectable).
         const stored = await harness.eventRepo.findById(event.id);
         expect(stored?.status).toBe("delivered");
-        // ...and the event remains in the process working set (not terminal-failed).
-        expect(harness.eventService.inMemoryCount()).toBe(1);
+
+        // Evicted from the in-memory working set (delivered is terminal).
+        expect(harness.eventService.inMemoryCount()).toBe(0);
+
+        // But still reachable via the service, which falls back to the database.
+        const viaService = await harness.eventService.getOrThrow(event.id);
+        expect(viaService.status).toBe("delivered");
     });
 
     it("evicts a dead event from memory but persists it to the database", async () => {
@@ -61,11 +66,11 @@ describe("two-level storage", () => {
         await harness.eventService.redeliver(event.id); // must find it in the DB
         await harness.manager.onIdle(endpoint.id);
 
-        // Delivered now, reflected in both levels.
+        // Delivered now, persisted to the database with its full history.
         const stored = await harness.eventRepo.findById(event.id);
         expect(stored?.status).toBe("delivered");
         expect(stored?.attempts).toHaveLength(6); // 5 old + 1 new, history preserved
-        expect(harness.eventService.inMemoryCount()).toBe(1); // re-admitted to memory
+        expect(harness.eventService.inMemoryCount()).toBe(0); // delivered -> evicted again
     });
 
     it("still lists a dead event even though it is not in memory", async () => {

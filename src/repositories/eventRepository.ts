@@ -39,9 +39,10 @@ export interface EventRepository {
     countByEndpoint(endpointId: string): Promise<number>;
 
     /**
-     * The most recent non-dead events for an endpoint, newest first, capped at
-     * `limit`. Used to repopulate the service's in-memory working set from the
-     * database when it empties for that endpoint.
+     * The most recent pending (non-terminal) events for an endpoint, newest
+     * first, capped at `limit`. Used to repopulate the service's in-memory
+     * working set from the database when it empties for that endpoint; terminal
+     * events (delivered/dead) stay in the database only.
      */
     findRecentActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]>;
 

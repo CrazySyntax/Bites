@@ -39,7 +39,6 @@ export interface Attempt {
 export interface WebhookEvent {
     id: string;
     endpointId: string;
-    payload: unknown;
     /**
      * `JSON.stringify(payload)` captured once at creation. These are the exact
      * bytes sent as the request body AND the body portion of what we sign — the

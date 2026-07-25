@@ -39,12 +39,10 @@ const ENDPOINT: Endpoint = {
 };
 
 function makeEvent(overrides: Partial<WebhookEvent> = {}): WebhookEvent {
-    const payload = overrides.payload ?? { hello: "world" };
     return {
         id: "evt_1",
         endpointId: ENDPOINT.id,
-        payload,
-        rawPayload: JSON.stringify(payload),
+        rawPayload: JSON.stringify({ hello: "world" }),
         status: "pending",
         attempts: [],
         attemptCount: 0,

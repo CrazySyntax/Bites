@@ -175,7 +175,6 @@ export class EventService implements EventStore {
         const event: WebhookEvent = {
             id: randomUUID(),
             endpointId,
-            payload,
             rawPayload: JSON.stringify(payload),
             status: "pending",
             attempts: [],

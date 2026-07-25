@@ -17,7 +17,6 @@ function makeEvent(overrides: Partial<WebhookEvent> = {}): WebhookEvent {
     return {
         id: "ev-1",
         endpointId: "ep-1",
-        payload: { hello: "world" },
         rawPayload: '{"hello":"world"}',
         status: "pending",
         attempts: [],
@@ -120,11 +119,16 @@ describe("in-memory repositories return isolated copies", () => {
 
             await repo.create(input);
             input.status = "dead";
-            (input.payload as { hello: string }).hello = "mutated"; // deep field
+            input.attempts.push({
+                attemptNumber: 1,
+                timestamp: "2026-07-24T00:00:01.000Z",
+                statusCode: 500,
+                durationMs: 3,
+            }); // nested array
 
             const stored = await repo.findById("ev-1");
             expect(stored?.status).toBe("pending");
-            expect((stored?.payload as { hello: string }).hello).toBe("world");
+            expect(stored?.attempts).toHaveLength(0); // nested array is isolated too
         });
 
         it("reflects a change only after it goes through save()", async () => {

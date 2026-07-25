@@ -164,6 +164,7 @@ export class EndpointQueue {
                     endpointId: event.endpointId,
                     statusCode: response.statusCode,
                     attempt: attemptNumber,
+                    rawPayload: event.rawPayload,
                     signature,
                 });
             } else {
@@ -172,6 +173,7 @@ export class EndpointQueue {
                     endpointId: event.endpointId,
                     statusCode: response.statusCode,
                     attempt: attemptNumber,
+                    payload: event.rawPayload,
                     signature,
                 });
                 this.registerFailure(event);

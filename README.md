@@ -235,7 +235,7 @@ and covered by a test.
   Different endpoints are unaffected — they each have their own queue and are
   delivered concurrently, so one endpoint's stuck event never delays another's.
 
-- **The in-memory store is capacity-bounded to avoid unbounded memory growth.**
+- **The "database" store is still in-memory, and therefore capacity-bounded to avoid unbounded memory growth.**
   At most **100** endpoints may exist, and each endpoint may hold at most **50**
   events. A `POST /endpoints` that would exceed the endpoint limit, or a
   `POST /events` that would exceed an endpoint's event limit, is rejected with
@@ -248,8 +248,8 @@ and covered by a test.
   condition the client cannot resolve by changing its request. The limit on
   events is checked *after* the idempotency lookup, so a deduplicated retry of an
   already-accepted event never trips the cap. Limits live in `src/config.ts`
-  (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); a real datastore would raise or
-  remove them.
+  (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); when a real datastore is used we will
+  remove them. 
 
 - **Storage has two levels, and terminal (`delivered`/`dead`) events are archived,
   not memory-resident.**

@@ -136,7 +136,7 @@ describe("two-level storage", () => {
         });
         expect(second.deduplicated).toBe(false);
         expect(second.event.id).not.toBe(first.event.id);
-        expect(await harness.eventRepo.countByEndpoint(endpoint.id)).toBe(2);
+        expect(await harness.eventRepo['countByEndpoint'](endpoint.id)).toBe(2);
     });
 
     it("retains a freshly-accepted (pending) event in memory", async () => {

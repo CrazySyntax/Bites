@@ -4,6 +4,8 @@ import type {
     ListEventsQuery,
     ListEventsResult,
 } from "../eventRepository.js";
+import {capacityExceeded} from "../../errors.js";
+import {MAX_EVENTS_PER_ENDPOINT} from "../../config.js";
 
 /**
  * Returns true if an event with `actual` status should be included when the
@@ -40,6 +42,13 @@ export class InMemoryEventRepository implements EventRepository {
     private readonly idempotency = new Map<string, string>();
 
     async create(event: WebhookEvent): Promise<WebhookEvent> {
+        // Capacity guard against unbounded growth, measured against the durable
+        // store (survives dead-event eviction from memory). Checked after the
+        // idempotency lookup so a deduplicated request never trips the limit.
+        // See README "Assumptions".
+        if ((await this.countByEndpoint(event.endpointId)) >= MAX_EVENTS_PER_ENDPOINT) {
+            throw capacityExceeded(`event limit reached for endpoint (max ${MAX_EVENTS_PER_ENDPOINT})`);
+        }
         this.events.set(event.id, cloneEvent(event));
         const ids = this.byEndpoint.get(event.endpointId) ?? [];
         ids.push(event.id);
@@ -86,7 +95,7 @@ export class InMemoryEventRepository implements EventRepository {
         this.idempotency.set(key, eventId);
     }
 
-    async countByEndpoint(endpointId: string): Promise<number> {
+    private async countByEndpoint(endpointId: string): Promise<number> {
         return (this.byEndpoint.get(endpointId) ?? []).length;
     }
 

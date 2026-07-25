@@ -164,13 +164,7 @@ export class EventService implements EventStore {
             }
         }
 
-        // Capacity guard against unbounded growth, measured against the durable
-        // store (survives dead-event eviction from memory). Checked after the
-        // idempotency lookup so a deduplicated request never trips the limit.
-        // See README "Assumptions".
-        if ((await this.eventRepo.countByEndpoint(endpointId)) >= MAX_EVENTS_PER_ENDPOINT) {
-            throw capacityExceeded(`event limit reached for endpoint (max ${MAX_EVENTS_PER_ENDPOINT})`);
-        }
+
 
         const event: WebhookEvent = {
             id: randomUUID(),

@@ -35,9 +35,6 @@ export interface EventRepository {
     /** Record the mapping from an idempotency key to an event id. */
     saveIdempotencyKey(key: string, eventId: string): Promise<void>;
 
-    /** Number of events belonging to an endpoint (used to enforce the capacity limit). */
-    countByEndpoint(endpointId: string): Promise<number>;
-
     /**
      * The most recent pending (non-terminal) events for an endpoint, newest
      * first, capped at `limit`. Used to repopulate the service's in-memory

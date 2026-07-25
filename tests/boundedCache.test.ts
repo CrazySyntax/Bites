@@ -35,7 +35,7 @@ describe("bounded per-endpoint in-memory cache", () => {
         expect(harness.eventService.inMemoryCount()).toBe(CAP);
 
         // Every event — including the overflow one — is durably persisted.
-        expect(await harness.eventRepo.countByEndpoint(endpoint.id)).toBe(CAP + 1);
+        expect(await harness.eventRepo['countByEndpoint'](endpoint.id)).toBe(CAP + 1);
     });
 
     it("still resolves an overflow (database-only) event via database fallback", async () => {

@@ -4,6 +4,8 @@ import type { DeliveryConfig } from "../src/config.js";
 import type { DeliveryDeps } from "../src/delivery/deliveryDeps.js";
 import { EndpointQueue } from "../src/delivery/endpointQueue.js";
 import type { TransportResponse } from "../src/delivery/httpTransport.js";
+import type { EventStore } from "../src/delivery/stores.js";
+import { InMemoryEventRepository } from "../src/repositories/inMemory/inMemoryEventRepository.js";
 import type { Endpoint, WebhookEvent } from "../src/types.js";
 import { FakeTransport, respondNever } from "./harness.js";
 
@@ -70,11 +72,21 @@ function buildQueue(options: {
     transport: FakeTransport;
     event: WebhookEvent;
     config?: DeliveryConfig;
+    /** Real event store to read/persist through. Defaults to a stub that always
+     * returns `options.event` and echoes saves — enough for single-attempt tests
+     * that assert against the live event object rather than a backing store. */
+    events?: EventStore;
 }): { queue: EndpointQueue; save: jest.Mock<(e: WebhookEvent) => Promise<WebhookEvent>> } {
-    const save = jest.fn(async (e: WebhookEvent) => e);
+    const store: EventStore = options.events ?? {
+        findById: async () => options.event,
+        save: async (e: WebhookEvent) => e,
+    };
+    // Spy that still writes through to `store`, so call counts and real
+    // persistence (when a repository is supplied) are both observable.
+    const save = jest.fn((e: WebhookEvent) => store.save(e));
     const deps: DeliveryDeps = {
         endpoints: { findById: async () => ENDPOINT },
-        events: { findById: async () => options.event, save },
+        events: { findById: (id: string) => store.findById(id), save },
         transport: options.transport,
         config: options.config ?? testConfig,
         now: () => Date.now(), // faked by jest.useFakeTimers -> deterministic durations
@@ -180,6 +192,103 @@ describe("EndpointQueue.attemptDelivery", () => {
         expect(event.attempts[0].statusCode).toBe(500);
         expect(event.attempts[0].error).toBeUndefined();
         expect(save).toHaveBeenCalledTimes(1);
+    });
+});
+
+/**
+ * End-to-end test of the worker loop (not the private single-attempt method):
+ * an event whose first delivery fails is retried *in place* after the
+ * exponential backoff sleep, and the retry succeeds. Fake timers let us
+ * fast-forward the backoff deterministically and prove the retry is gated on
+ * the timer rather than firing immediately.
+ */
+describe("EndpointQueue run loop", () => {
+    // A config with a visible backoff window so we can assert the retry only
+    // fires once the exponential-backoff timer elapses.
+    const scenarioConfig: DeliveryConfig = {
+        maxAttempts: 5,
+        timeoutMs: TIMEOUT_MS,
+        backoffBaseMs: 100,
+        backoffFactor: 2,
+        backoffMaxMs: 10_000,
+    };
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date("2026-07-24T00:00:00.000Z"));
+    });
+
+    afterEach(() => {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+    });
+
+    it("retries after exponential backoff and succeeds on the second attempt", async () => {
+        // The endpoint fails the first attempt (500), then recovers: every later
+        // attempt gets a 200. rng = 0 (from buildQueue) means no jitter, so the
+        // backoff is exactly the deterministic exponential term.
+        const transport = new FakeTransport(async (_req, callIndex) =>
+            (callIndex === 1 ? { statusCode: 500 } : { statusCode: 200 }) as TransportResponse,
+        );
+
+        // Persist through a real repository (the "database", the source of truth).
+        // The loop reads a fresh copy from the store each iteration and writes it
+        // back on save, so we assert status against the DB rather than a local ref.
+        const eventRepo = new InMemoryEventRepository();
+        const event = makeEvent();
+        await eventRepo.create(event);
+        const { queue, save } = buildQueue({
+            transport,
+            event,
+            config: scenarioConfig,
+            events: eventRepo,
+        });
+
+        // Drive the real worker loop (enqueue -> wake -> run), not the private attempt.
+        queue.enqueue(event.id);
+
+        // The first attempt runs and fails; the loop then parks on the backoff sleep
+        // with the event still at the head of the queue. The async timer helper
+        // interleaves microtask flushing with timer advancement, so the attempt's
+        // promise chain fully settles before we assert.
+        await jest.advanceTimersByTimeAsync(0);
+        expect(transport.calls).toHaveLength(1);
+
+        // In the database, the event is `pending` after the first (failed) invocation:
+        // one failed attempt recorded, still retryable (attempts remain).
+        const afterFirst = await eventRepo.findById(event.id);
+        expect(afterFirst?.status).toBe("pending");
+        expect(afterFirst?.attemptCount).toBe(1);
+        expect(afterFirst?.attempts).toHaveLength(1);
+        expect(afterFirst?.attempts[0].statusCode).toBe(500);
+
+        // Backoff after the first failure: base * factor^0 = 100ms, no jitter.
+        const backoffMs = scenarioConfig.backoffBaseMs; // 100
+        // Just before the backoff elapses the retry has NOT fired: still one attempt,
+        // and the database still shows the event as pending.
+        await jest.advanceTimersByTimeAsync(backoffMs - 1);
+        expect(transport.calls).toHaveLength(1);
+        expect((await eventRepo.findById(event.id))?.status).toBe("pending");
+
+        // Crossing the backoff boundary wakes the loop, which retries the *same*
+        // head event; this time the endpoint answers 200 and the event is delivered.
+        await jest.advanceTimersByTimeAsync(1);
+        await queue.onIdle();
+
+        expect(transport.calls).toHaveLength(2);
+
+        // In the database, the event is now `delivered` after the second invocation.
+        const afterSecond = await eventRepo.findById(event.id);
+        expect(afterSecond?.status).toBe("delivered");
+        expect(afterSecond?.attempts).toHaveLength(2);
+        expect(afterSecond?.attempts[1].statusCode).toBe(200);
+        expect(afterSecond?.attempts[1].error).toBeUndefined();
+        // The failure count is not bumped on the successful retry.
+        expect(afterSecond?.attemptCount).toBe(1);
+        // Saved once per attempt: the recorded failure, then the delivery.
+        expect(save).toHaveBeenCalledTimes(2);
+        // Backoff timer + per-attempt timeout are both cleared — nothing leaks.
+        expect(jest.getTimerCount()).toBe(0);
     });
 });
 

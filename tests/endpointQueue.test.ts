@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { DeliveryConfig } from "../src/config.js";
 import type { DeliveryDeps } from "../src/delivery/deliveryDeps.js";
@@ -179,5 +180,92 @@ describe("EndpointQueue.attemptDelivery", () => {
         expect(event.attempts[0].statusCode).toBe(500);
         expect(event.attempts[0].error).toBeUndefined();
         expect(save).toHaveBeenCalledTimes(1);
+    });
+});
+
+const config: DeliveryConfig = {
+    maxAttempts: 5,
+    timeoutMs: 5_000,
+    backoffBaseMs: 500,
+    backoffFactor: 2,
+    backoffMaxMs: 30_000,
+};
+
+/**
+ * `computeBackoffMs` is a private method on EndpointQueue (there is no standalone
+ * `backoff` module). It is a pure function of its arguments, so we reach it on a
+ * throwaway queue instance for focused unit testing — mirroring how the private
+ * `attemptDelivery` is reached above.
+ */
+type WithComputeBackoffMs = {
+    computeBackoffMs(attemptCount: number, config: DeliveryConfig, rng: () => number): number;
+};
+function computeBackoffMs(attemptCount: number, config: DeliveryConfig, rng: () => number): number {
+    const { queue } = buildQueue({
+        transport: new FakeTransport((req) => respondNever(req)),
+        event: makeEvent(),
+    });
+    return (queue as unknown as WithComputeBackoffMs).computeBackoffMs(attemptCount, config, rng);
+}
+
+/**
+ * `sign` is a private method on EndpointQueue (there is no standalone `signer`
+ * module). It is a pure function of its arguments, so we reach it on a throwaway
+ * queue instance for focused unit testing — mirroring `computeBackoffMs` above.
+ */
+type WithSign = { sign(rawBody: string, secret: string): string };
+function sign(rawBody: string, secret: string): string {
+    const { queue } = buildQueue({
+        transport: new FakeTransport((req) => respondNever(req)),
+        event: makeEvent(),
+    });
+    return (queue as unknown as WithSign).sign(rawBody, secret);
+}
+
+describe("computeBackoffMs", () => {
+    const noJitter = () => 0;
+
+    it("grows exponentially with the attempt count (no jitter)", () => {
+        expect(computeBackoffMs(1, config, noJitter)).toBe(500); // 500 * 2^0
+        expect(computeBackoffMs(2, config, noJitter)).toBe(1_000); // 500 * 2^1
+        expect(computeBackoffMs(3, config, noJitter)).toBe(2_000); // 500 * 2^2
+        expect(computeBackoffMs(4, config, noJitter)).toBe(4_000); // 500 * 2^3
+    });
+
+    it("caps the exponential term at backoffMaxMs", () => {
+        const smallCap: DeliveryConfig = { ...config, backoffMaxMs: 3_000 };
+        expect(computeBackoffMs(10, smallCap, noJitter)).toBe(3_000);
+    });
+
+    it("adds jitter in [0, backoffBaseMs)", () => {
+        // rng = 1 (its supremum) yields base delay + full base of jitter.
+        expect(computeBackoffMs(1, config, () => 1)).toBe(1_000); // 500 + 500
+        // A mid-range rng lands between the no-jitter and full-jitter bounds.
+        const mid = computeBackoffMs(1, config, () => 0.5);
+        expect(mid).toBeGreaterThanOrEqual(500);
+        expect(mid).toBeLessThan(1_000);
+    });
+});
+
+describe("sign", () => {
+    it("produces an sha256-prefixed hex HMAC of the body", () => {
+        const secret = "super-secret";
+        const body = JSON.stringify({ hello: "world" });
+
+        const expectedHex = createHmac("sha256", secret).update(body, "utf8").digest("hex");
+
+        expect(sign(body, secret)).toBe(`sha256=${expectedHex}`);
+    });
+
+    it("is deterministic for the same body + secret", () => {
+        expect(sign("payload", "k")).toBe(sign("payload", "k"));
+    });
+
+    it("changes when the secret changes", () => {
+        expect(sign("payload", "k1")).not.toBe(sign("payload", "k2"));
+    });
+
+    it("changes when a single byte of the body changes", () => {
+        expect(sign('{"a":1}', "k")).not.toBe(sign('{"a":2}', "k"));
     });
 });

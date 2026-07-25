@@ -1,8 +1,14 @@
+import { createHmac } from "node:crypto";
 import type { Attempt, WebhookEvent } from "../types.js";
-import { computeBackoffMs } from "./backoff.js";
 import type { DeliveryDeps } from "./deliveryDeps.js";
-import { sign } from "./signer.js";
-import { cancellableSleep, type CancellableSleep } from "./sleep.js";
+import {DeliveryConfig} from "../config.js";
+
+interface CancellableSleep {
+    /** Resolves when the delay elapses, or immediately if cancelled. */
+    promise: Promise<void>;
+    /** Clears the underlying timer and resolves the promise early. */
+    cancel: () => void;
+}
 
 /**
  * A single endpoint's delivery pipeline: an ordered FIFO of event ids drained
@@ -92,8 +98,8 @@ export class EndpointQueue {
 
                 // Failed but retryable: wait out the backoff, keeping the event at the
                 // head so nothing overtakes it, then loop to retry the same event.
-                const delayMs = computeBackoffMs(event.attemptCount, this.deps.config, this.deps.rng);
-                this.backoff = cancellableSleep(delayMs);
+                const delayMs = this.computeBackoffMs(event.attemptCount, this.deps.config, this.deps.rng);
+                this.backoff = this.cancellableSleep(delayMs);
                 await this.backoff.promise;
                 this.backoff = undefined;
             }
@@ -121,7 +127,7 @@ export class EndpointQueue {
 
             const headers: Record<string, string> = {
                 "content-type": "application/json",
-                "x-signature": sign(event.rawPayload, endpoint.secret),
+                "x-signature": this.sign(event.rawPayload, endpoint.secret),
                 "x-event-id": event.id,
                 "x-event-timestamp": event.createdAt,
                 "x-attempt": String(attemptNumber),
@@ -162,6 +168,66 @@ export class EndpointQueue {
 
         event.attempts.push(attempt);
         await this.deps.events.save(event);
+    }
+
+    /**
+     * Exponential backoff with full jitter.
+     *
+     * `attemptCount` is the number of failures so far (>= 1). The base delay grows
+     * as base * factor^(attemptCount-1), capped at backoffMaxMs, plus a random
+     * jitter in [0, base) to avoid synchronized retries ("thundering herd").
+     *
+     * `rng` is injectable so tests can pass `() => 0` for deterministic delays.
+     */
+    private computeBackoffMs(
+        attemptCount: number,
+        config: DeliveryConfig,
+        rng: () => number = Math.random,
+    ): number {
+        const exponential = config.backoffBaseMs * config.backoffFactor ** (attemptCount - 1);
+        const capped = Math.min(exponential, config.backoffMaxMs);
+        const jitter = rng() * config.backoffBaseMs;
+        return Math.round(capped + jitter);
+    }
+
+    /**
+     * Computes the value for the `X-Signature` header: an HMAC-SHA256 of the exact
+     * request body bytes, keyed by the endpoint's secret.
+     *
+     * Format is `sha256=<hex>` (GitHub-style) so the algorithm is self-describing
+     * and customers know how to reproduce it.
+     */
+    private sign(rawBody: string, secret: string): string {
+        const digest = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+        return `sha256=${digest}`;
+    }
+
+    /**
+     * A `setTimeout`-based delay that can be cancelled. Used for backoff waits so
+     * they can be interrupted on pause/shutdown and so tests (with Jest fake
+     * timers) don't leak open handles.
+     */
+    private cancellableSleep(ms: number): CancellableSleep {
+        let timer: NodeJS.Timeout | undefined;
+        let resolveFn: (() => void) | undefined;
+
+        const promise = new Promise<void>((resolve) => {
+            resolveFn = resolve;
+            timer = setTimeout(() => {
+                timer = undefined;
+                resolve();
+            }, ms);
+        });
+
+        const cancel = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = undefined;
+            }
+            resolveFn?.();
+        };
+
+        return { promise, cancel };
     }
 
     private registerFailure(event: WebhookEvent): void {

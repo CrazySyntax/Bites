@@ -101,8 +101,8 @@ export const DATABASE_FILE = isAbsolute(databaseFileSetting)
  * Size of `EventService`'s in-memory working set per endpoint. The service keeps
  * at most this many non-dead events per endpoint resident to bound the heap;
  * beyond it, new events are persisted to the database only. When an endpoint's
- * resident count falls to zero, the service reloads up to this many recent
- * non-dead events from the database.
+ * resident count falls to zero, the service reloads up to this many oldest
+ * non-dead events from the database (preserving FIFO delivery order).
  */
 export const MAX_IN_MEMORY_EVENTS_PER_ENDPOINT = envNumber(
     "MAX_IN_MEMORY_EVENTS_PER_ENDPOINT",

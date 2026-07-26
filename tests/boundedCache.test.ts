@@ -63,7 +63,7 @@ describe("bounded per-endpoint in-memory cache", () => {
         expect(harness.eventService.inMemoryCount()).toBe(CAP * 2);
     });
 
-    it("reloads recent events from the database when an endpoint's cache drains", async () => {
+    it("reloads oldest events from the database when an endpoint's cache drains", async () => {
         const harness = createHarness({ responder: ok });
         const endpoint = await createPausedEndpoint(harness);
 
@@ -73,7 +73,7 @@ describe("bounded per-endpoint in-memory cache", () => {
 
         // Mark the CAP resident events dead one by one, as the delivery engine
         // would via `save`. Each dead event is evicted; when the last one drains
-        // the endpoint to zero, the service reloads recent non-dead events from
+        // the endpoint to zero, the service reloads oldest non-dead events from
         // the database — here, the single pending overflow event.
         for (let i = 0; i < CAP; i++) {
             const event = events[i];
@@ -86,6 +86,36 @@ describe("bounded per-endpoint in-memory cache", () => {
         // The reloaded event is the overflow one (the only remaining non-dead event).
         const reloaded = await harness.eventService.getOrThrow(events[CAP].id);
         expect(reloaded.status).toBe("pending");
+    });
+
+    it("reloads the OLDEST pending events (FIFO), not the newest", async () => {
+        const harness = createHarness({ responder: ok });
+        const endpoint = await createPausedEndpoint(harness);
+
+        // Accept more pending events than can ever be resident, in chronological
+        // order: the first CAP are resident, the remaining `CAP + 5` are
+        // database-only overflow. Draining the resident set then leaves CAP + 5
+        // pending events — more than the cap — so reload must *choose* which to
+        // keep. (TOTAL < the durable MAX_EVENTS_PER_ENDPOINT cap of 50.)
+        const TOTAL = CAP * 2 + 5;
+        const events = await acceptN(harness, endpoint.id, TOTAL);
+        expect(harness.eventService.inMemoryCountForEndpoint(endpoint.id)).toBe(CAP);
+
+        // Drain the resident set to zero by killing the first CAP events. The final
+        // `save` triggers a reload, which must pick the OLDEST CAP of the remaining
+        // pending overflow (events[CAP..CAP-1+CAP]) — not the newest.
+        for (let i = 0; i < CAP; i++) {
+            events[i].status = "dead";
+            await harness.eventService.save(events[i]);
+        }
+
+        expect(harness.eventService.inMemoryCountForEndpoint(endpoint.id)).toBe(CAP);
+
+        // Inspect the residency set directly: the oldest overflow event is resident,
+        // the newest is not (the newest would be the LIFO pick this guards against).
+        const resident = harness.eventService["residentByEndpoint"].get(endpoint.id)!;
+        expect(resident.has(events[CAP].id)).toBe(true); // oldest overflow reloaded
+        expect(resident.has(events[TOTAL - 1].id)).toBe(false); // newest overflow not reloaded
     });
 
     it("does not reload while an endpoint still has resident events", async () => {

@@ -161,7 +161,8 @@ is a subset of the data in the database. We keep there only data that we need im
 and we cannot tolerate availability or consistency. These are:
 - all endpoints entities (id, url, secret, status). Once a user calls POST /event, we need to perfectly 
 know the data of the endpoint to the exact time of the call.
-- For each endpoint, 10 most recent events in "pending" status. "Devlivered" and "dead" events
+- For each endpoint, 10 oldest events in "pending" status (oldest first preserves FIFO
+delivery order). "Devlivered" and "dead" events
 are not needed immediately, and we can fetch them from the database when needed.
 
 **Snapshot persistence** (`src/services/databaseService.ts`, `routes/database.ts`)
@@ -271,15 +272,16 @@ and covered by a test.
   by key). Only `pending` events stay memory-resident. (`inMemoryCount()` on
   `EventService` exposes the working-set size as an operational metric.)
 
-- **`EventService`'s in-memory working set is bounded to the 10 most recent
+- **`EventService`'s in-memory working set is bounded to the 10 oldest
   `pending` events per endpoint.** The database holds every event, but to
   avoid heap collapse under many endpoints the service caps its resident copy at
   `MAX_IN_MEMORY_EVENTS_PER_ENDPOINT` (10) events *per endpoint*. Consequences:
   once an endpoint already has 10 resident events, a newly accepted event is
   written to the database **only** and not cached; and when an endpoint's
   resident count falls to 0 (its cached events all became `delivered`/`dead` and
-  were evicted), the service reloads up to 10 of that endpoint's most recent
-  `pending` events from the database on the next `save`. Reads for a
+  were evicted), the service reloads up to 10 of that endpoint's oldest
+  `pending` events from the database on the next `save` — preserving FIFO
+  delivery order. Reads for a
   database-only event fall back to the database transparently, so correctness is
   unaffected — the bound only limits how much lives in process memory.
   (`inMemoryCountForEndpoint(endpointId)` exposes the per-endpoint resident count

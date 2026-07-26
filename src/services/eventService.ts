@@ -55,7 +55,7 @@ function cloneEvent(event: WebhookEvent): WebhookEvent {
  * **per endpoint** (tracked in `residentByEndpoint`). Once an endpoint is at that
  * limit, a new event is persisted to the database only and not cached. When an
  * endpoint's resident count falls to zero (all its cached events became
- * terminal), the service reloads up to that many recent pending events from the
+ * terminal), the service reloads up to that many oldest pending events from the
  * database.
  *
  * Terminal-event rule: when an event becomes terminal — `delivered` (2xx) or
@@ -117,17 +117,18 @@ export class EventService implements EventStore {
 
     /**
      * If an endpoint has no resident events left, repopulate the working set with
-     * up to the per-endpoint cap of recent pending events from the database.
+     * up to the per-endpoint cap of the oldest pending events from the database,
+     * so reload preserves FIFO delivery order.
      */
     private async reloadIfEmpty(endpointId: string): Promise<void> {
         if (this.residentIds(endpointId).size > 0) return;
 
-        const recent = await this.eventRepo.findRecentActiveByEndpoint(
+        const oldest = await this.eventRepo.findOldestActiveByEndpoint(
             endpointId,
             MAX_IN_MEMORY_EVENTS_PER_ENDPOINT,
         );
         const ids = this.residentIds(endpointId);
-        for (const event of recent) {
+        for (const event of oldest) {
             this.memory.set(event.id, event); // already a fresh copy from the repo
             ids.add(event.id);
         }

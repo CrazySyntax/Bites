@@ -79,7 +79,8 @@ working set that is a *subset* of the database — only what's needed immediatel
   becomes terminal (`delivered`/`dead`) it is written to the DB and **evicted
   from memory**. Reads (`findById`) fall back to the DB transparently, so
   `GET /events/:id`, listing, and `redeliver` still work. When an endpoint's
-  resident set empties, the service reloads up to 10 recent pending events.
+  resident set empties, the service reloads up to 10 oldest pending events
+  (FIFO — oldest first, matching delivery order).
 - Capacity, idempotency, and listing checks all run against the **database**, so
   they stay correct across eviction.
 

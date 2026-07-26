@@ -99,19 +99,20 @@ export class InMemoryEventRepository implements EventRepository {
         return (this.byEndpoint.get(endpointId) ?? []).length;
     }
 
-    async findRecentActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]> {
+    async findOldestActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]> {
         const ids = this.byEndpoint.get(endpointId) ?? [];
 
-        // Newest first: walk the insertion-ordered index in reverse, keeping only
-        // pending (non-terminal) events, until we have `limit` of them. Terminal
-        // events (delivered/dead) live in the database only and are not reloaded.
-        const recent: WebhookEvent[] = [];
-        for (let i = ids.length - 1; i >= 0 && recent.length < limit; i--) {
+        // Oldest first: walk the insertion-ordered index forward, keeping only
+        // pending (non-terminal) events, until we have `limit` of them, so reload
+        // preserves FIFO delivery order. Terminal events (delivered/dead) live in
+        // the database only and are not reloaded.
+        const oldest: WebhookEvent[] = [];
+        for (let i = 0; i < ids.length && oldest.length < limit; i++) {
             const event = this.events.get(ids[i]);
             if (!event || event.status !== "pending") continue;
-            recent.push(cloneEvent(event));
+            oldest.push(cloneEvent(event));
         }
-        return recent;
+        return oldest;
     }
 
     async dumpAll(): Promise<WebhookEvent[]> {

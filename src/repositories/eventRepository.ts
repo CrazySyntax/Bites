@@ -36,12 +36,13 @@ export interface EventRepository {
     saveIdempotencyKey(key: string, eventId: string): Promise<void>;
 
     /**
-     * The most recent pending (non-terminal) events for an endpoint, newest
-     * first, capped at `limit`. Used to repopulate the service's in-memory
-     * working set from the database when it empties for that endpoint; terminal
-     * events (delivered/dead) stay in the database only.
+     * The oldest pending (non-terminal) events for an endpoint, oldest first,
+     * capped at `limit`. Used to repopulate the service's in-memory working set
+     * from the database when it empties for that endpoint; reloading oldest-first
+     * preserves FIFO delivery order. Terminal events (delivered/dead) stay in the
+     * database only.
      */
-    findRecentActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]>;
+    findOldestActiveByEndpoint(endpointId: string, limit: number): Promise<WebhookEvent[]>;
 
     /**
      * Export every event in creation order (used to snapshot the database to a

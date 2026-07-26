@@ -95,11 +95,9 @@ write-only.
 ## Conventions to follow
 
 - **Errors**: throw the typed helpers in `src/errors.ts` (`badRequest`=400,
-  `notFound`=404, `conflict`=409, `capacityExceeded`=500). The `errorHandler` in
+  `notFound`=404, `conflict`=409). The `errorHandler` in
   `app.ts` maps `AppError` → its status; everything else → 500. Express 5
   auto-forwards rejected async handlers, so route handlers can just `throw`.
-- **Capacity limits deliberately return HTTP 500** (not 429/507) — per the spec;
-  don't "fix" this.
 - **Signing**: `X-Signature: sha256=<hex>` is HMAC-SHA256 (keyed by the endpoint
   secret) over `<endpointId>.<rawPayload>` — `rawPayload` is
   `JSON.stringify(payload)` captured once at creation. Binding the endpoint id in
@@ -128,6 +126,6 @@ write-only.
 
 The README's **"Approach & design"** and **"Assumptions"** sections are the
 authoritative record of interpretation decisions (ordering semantics, the three
-statuses, paused-endpoint parking, capacity caps as 500, the two-level storage /
+statuses, paused-endpoint parking, the two-level storage /
 terminal-event eviction rule). Read them before changing delivery, storage, or
 status behavior — each assumption is enforced in code and covered by a test.

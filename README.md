@@ -236,21 +236,11 @@ and covered by a test.
   Different endpoints are unaffected — they each have their own queue and are
   delivered concurrently, so one endpoint's stuck event never delays another's.
 
-- **The "database" store is still in-memory, and therefore capacity-bounded to avoid unbounded memory growth.**
-  At most **100** endpoints may exist, and each endpoint may hold at most **50**
-  events. A `POST /endpoints` that would exceed the endpoint limit, or a
-  `POST /events` that would exceed an endpoint's event limit, is rejected with
-  **HTTP 500** (`{ "error": "endpoint limit reached (max 100)" }` /
-  `"event limit reached for endpoint (max 50)"`). The reasoning: with only
-  in-memory storage there is no eviction or archival, so unbounded creation is a
-  memory leak; a hard cap surfaces the ceiling loudly rather than letting the
-  process grow until it is killed. **500** (rather than 429/507) is used because
-  the spec asked for it, and it correctly signals a server-side capacity
-  condition the client cannot resolve by changing its request. The limit on
-  events is checked *after* the idempotency lookup, so a deduplicated retry of an
-  already-accepted event never trips the cap. Limits live in `src/config.ts`
-  (`MAX_ENDPOINTS`, `MAX_EVENTS_PER_ENDPOINT`); when a real datastore is used we will
-  remove them. 
+- **The "database" store grows without bound.** There is no cap on the number of
+  endpoints or on the number of events per endpoint; the store accepts new
+  entities indefinitely. (The only bound anywhere is
+  `MAX_IN_MEMORY_EVENTS_PER_ENDPOINT` — a limit on the *in-memory working set*,
+  not on the database, described below.)
 
 - **Storage has two levels, and terminal (`delivered`/`dead`) events are archived,
   not memory-resident.**
@@ -266,9 +256,9 @@ and covered by a test.
   event should not occupy the process working set, yet must remain fetchable
   (`GET /events/:id`) and, for a `dead` event, redeliverable
   (`POST /events/:id/redeliver`). Both operations fall back to the database when
-  memory misses, and `redeliver` re-admits the event to memory. Listing,
-  capacity, and idempotency checks run against the database, so they stay correct
-  across eviction (a terminal event still counts toward the cap and still dedupes
+  memory misses, and `redeliver` re-admits the event to memory. Listing and
+  idempotency checks run against the database, so they stay correct
+  across eviction (a terminal event still dedupes
   by key). Only `pending` events stay memory-resident. (`inMemoryCount()` on
   `EventService` exposes the working-set size as an operational metric.)
 
@@ -285,7 +275,10 @@ and covered by a test.
   database-only event fall back to the database transparently, so correctness is
   unaffected — the bound only limits how much lives in process memory.
   (`inMemoryCountForEndpoint(endpointId)` exposes the per-endpoint resident count
-  as an operational metric.)
+  as an operational metric.). A memory leak can also occur if number of in-memory endpoint
+  entities grows without limit. We also need to evict endpoint entities from memory if 
+  they are not used for a long time, as well as remove the relevant events from memory.
+  This is NOT implemented yet, but we can implement it in the future if needed.
 
 ## Manual testing
 We can use the following public API in order to test the webhook delivery service manually:

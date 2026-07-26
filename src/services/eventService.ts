@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
     DEFAULT_PAGE_LIMIT,
-    MAX_EVENTS_PER_ENDPOINT,
     MAX_IN_MEMORY_EVENTS_PER_ENDPOINT,
     MAX_PAGE_LIMIT,
 } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
 import type { EndpointReader, EventStore } from "../delivery/stores.js";
-import { badRequest, capacityExceeded, conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 import { ConsoleLogger, type Logger } from "../logger.js";
 import type {
     EventRepository,

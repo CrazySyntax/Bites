@@ -40,10 +40,6 @@ export class InMemoryEndpointRepository implements EndpointRepository {
         return { ...updated };
     }
 
-    async count(): Promise<number> {
-        return this.endpoints.size;
-    }
-
     async dumpAll(): Promise<Endpoint[]> {
         return Array.from(this.endpoints.values(), (endpoint) => ({ ...endpoint }));
     }

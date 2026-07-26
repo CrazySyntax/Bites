@@ -102,9 +102,9 @@ describe("two-level storage", () => {
         expect(viaService?.status).toBe("paused");
     });
 
-    it("keeps a dead event counted in the database after it is evicted from memory", async () => {
-        // A dead event is evicted from memory but stays counted in the database, so
-        // it still occupies its slot toward the per-endpoint capacity cap.
+    it("keeps a dead event stored in the database after it is evicted from memory", async () => {
+        // A dead event is evicted from memory but stays persisted in the database,
+        // so it remains listable and redeliverable.
         const harness = createHarness({ responder: serverError });
         const endpoint = await createEndpoint(harness);
 
@@ -128,7 +128,7 @@ describe("two-level storage", () => {
         expect(repeat.event.status).toBe("dead");
 
         // A distinct key creates a fresh event; the dead one is still persisted, so
-        // both count toward the per-endpoint cap.
+        // the database holds both.
         const second = await harness.eventService.accept({
             endpointId: endpoint.id,
             payload: { n: 2 },
@@ -136,7 +136,7 @@ describe("two-level storage", () => {
         });
         expect(second.deduplicated).toBe(false);
         expect(second.event.id).not.toBe(first.event.id);
-        expect(await harness.eventRepo['countByEndpoint'](endpoint.id)).toBe(2);
+        expect((await harness.eventRepo.list({ endpointId: endpoint.id, limit: 1, offset: 0 })).total).toBe(2);
     });
 
     it("retains a freshly-accepted (pending) event in memory", async () => {

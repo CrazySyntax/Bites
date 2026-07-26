@@ -78,13 +78,6 @@ export const DEFAULT_PAGE_LIMIT = envNumber("DEFAULT_PAGE_LIMIT", 20);
 export const MAX_PAGE_LIMIT = envNumber("MAX_PAGE_LIMIT", 100);
 
 /**
- * Capacity limits guarding the in-memory store against unbounded growth.
- * Exceeding either is treated as a server-side capacity failure (HTTP 500).
- */
-export const MAX_ENDPOINTS = envNumber("MAX_ENDPOINTS", 100);
-export const MAX_EVENTS_PER_ENDPOINT = envNumber("MAX_EVENTS_PER_ENDPOINT", 50);
-
-/**
  * Snapshot file the database dump endpoint writes. A relative `DATABASE_FILE`
  * (including the default) is anchored to the project root, so the snapshot
  * always lands in `<root>/stores/` regardless of the process working directory;

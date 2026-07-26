@@ -35,7 +35,7 @@ describe("bounded per-endpoint in-memory cache", () => {
         expect(harness.eventService.inMemoryCount()).toBe(CAP);
 
         // Every event — including the overflow one — is durably persisted.
-        expect(await harness.eventRepo['countByEndpoint'](endpoint.id)).toBe(CAP + 1);
+        expect((await harness.eventRepo.list({ endpointId: endpoint.id, limit: 1, offset: 0 })).total).toBe(CAP + 1);
     });
 
     it("still resolves an overflow (database-only) event via database fallback", async () => {
@@ -96,7 +96,7 @@ describe("bounded per-endpoint in-memory cache", () => {
         // order: the first CAP are resident, the remaining `CAP + 5` are
         // database-only overflow. Draining the resident set then leaves CAP + 5
         // pending events — more than the cap — so reload must *choose* which to
-        // keep. (TOTAL < the durable MAX_EVENTS_PER_ENDPOINT cap of 50.)
+        // keep.
         const TOTAL = CAP * 2 + 5;
         const events = await acceptN(harness, endpoint.id, TOTAL);
         expect(harness.eventService.inMemoryCountForEndpoint(endpoint.id)).toBe(CAP);

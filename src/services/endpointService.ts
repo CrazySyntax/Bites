@@ -1,8 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { MAX_ENDPOINTS } from "../config.js";
 import type { DeliveryManager } from "../delivery/deliveryManager.js";
 import type { EndpointReader } from "../delivery/stores.js";
-import { badRequest, capacityExceeded, notFound } from "../errors.js";
+import { badRequest, notFound } from "../errors.js";
 import { ConsoleLogger, redactEndpoint, type Logger } from "../logger.js";
 import type { EndpointRepository } from "../repositories/endpointRepository.js";
 import type { Endpoint, EndpointStatus } from "../types.js";
@@ -23,7 +22,7 @@ export interface UpdateEndpointInput {
  * Implements {@link EndpointReader} so the delivery engine can resolve an
  * endpoint's url + secret through this service rather than the repository.
  *
- * Changing an endpoint's status also drives the delivery side-effect (pause
+ * Changing an endpoint's status also drives the delivery side effect (pause
  * stops the queue; resume restarts it). The `DeliveryManager` is injected after
  * construction (`setDeliveryManager`) to break the service<->engine cycle.
  */
@@ -44,12 +43,6 @@ export class EndpointService implements EndpointReader {
 
     async create(url: string): Promise<Endpoint> {
         assertValidUrl(url);
-
-        // Capacity guard against unbounded growth, measured against the durable
-        // store. See README "Assumptions".
-        if ((await this.endpointRepo.count()) >= MAX_ENDPOINTS) {
-            throw capacityExceeded(`endpoint limit reached (max ${MAX_ENDPOINTS})`);
-        }
 
         const endpoint: Endpoint = {
             id: randomUUID(),
